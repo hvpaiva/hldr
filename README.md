@@ -35,6 +35,13 @@ touch the database; `/readyz` does. SQLite defaults to `./hldr.db`.
 cargo run -p hldr -- version
 ```
 
+```
+docker build -t hldr .
+docker run --rm -p 8080:8080 \
+  -e HLDR_ORIGIN=http://127.0.0.1:8080 \
+  hldr
+```
+
 ## Test
 
 ```
@@ -47,7 +54,8 @@ cargo test --workspace
 
 [release-plz](https://release-plz.dev) reads conventional commits,
 bumps `Cargo.toml` / `Cargo.lock`, and opens a PR. Merge it; the tag
-`vMAJOR.MINOR.PATCH` is what Kamal deploys.
+`vMAJOR.MINOR.PATCH` is what Kamal deploys to the instance configured in
+the GitHub Environment.
 
 `workflow_dispatch` on `deploy` deploys the version already in the crate,
 without bumping.

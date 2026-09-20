@@ -2,7 +2,7 @@ service: hldr
 image: hvpaiva/hldr
 
 servers:
-  - hvpaiva.dev
+  - <%= ENV.fetch("DEPLOY_HOST") %>
 
 proxy:
   ssl: true
@@ -12,8 +12,8 @@ proxy:
     path: /readyz
   run:
     bind_ips:
-      - 72.61.46.31
-      - "2a02:4780:66:5b90::1"
+      - <%= ENV.fetch("KAMAL_BIND_IPV4") %>
+      - "<%= ENV.fetch("KAMAL_BIND_IPV6") %>"
     log_max_size: ""
 
 registry:
@@ -36,11 +36,11 @@ env:
     HLDR_ADDR: 0.0.0.0:8080
     HLDR_CONTENT_DIR: /app/content
     HLDR_DATABASE: /var/lib/hldr/hldr.db
-    HLDR_ORIGIN: https://hvpaiva.dev
+    HLDR_ORIGIN: <%= ENV.fetch("HLDR_ORIGIN") %>
     HLDR_LOG: info
 
 volumes:
-  - /var/lib/hldr:/var/lib/hldr
+  - hldr_data:/var/lib/hldr
 
 logging:
   driver: json-file

@@ -70,8 +70,16 @@ jobs:
       - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
       - uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
         with:
-          ssh-private-key: ${{ secrets.APOLLO_DEPLOY_KEY }}
-      - run: mkdir -p ~/.ssh && cp .kamal/known_hosts ~/.ssh/known_hosts
+          ssh-private-key: ${{ secrets.KAMAL_SSH_KEY }}
+      - env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
       - run: kamal deploy --version "${{ steps.version.outputs.semver }}"
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          HLDR_ORIGIN: ${{ vars.HLDR_ORIGIN }}
+          KAMAL_BIND_IPV4: ${{ vars.KAMAL_BIND_IPV4 }}
+          KAMAL_BIND_IPV6: ${{ vars.KAMAL_BIND_IPV6 }}
