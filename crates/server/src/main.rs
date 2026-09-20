@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -15,10 +15,11 @@ mod api;
 mod html;
 mod negotiate;
 mod text;
+mod theme;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 const STYLE: &str = include_str!("../assets/style.css");
-const FAVICON: &str = include_str!("../assets/favicon.svg");
+const KEYS_JS: &str = include_str!("../assets/keys.js");
 const FAVICON_ICO: &[u8] = include_bytes!("../assets/favicon.ico");
 
 #[derive(Clone)]
@@ -109,7 +110,11 @@ fn router(state: AppState) -> Router {
         .route("/blog/{slug}", get(blog_post))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/theme", get(themes))
+        .route("/theme.txt", get(themes_txt))
+        .route("/theme/{slug}", get(set_theme))
         .route("/style.css", get(style_sheet))
+        .route("/keys.js", get(keys_js))
         .route("/favicon.svg", get(favicon))
         .route("/favicon.ico", get(favicon_ico))
         .route("/sitemap.xml", get(sitemap))
@@ -196,6 +201,17 @@ async fn about_txt(
     render_about(state, headers, true).await
 }
 
+async fn themes(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
+    render_themes(state, headers, false).await
+}
+
+async fn themes_txt(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    render_themes(state, headers, true).await
+}
+
 async fn project(
     State(state): State<AppState>,
     Path(raw): Path<String>,
@@ -220,7 +236,12 @@ async fn project(
             negotiate::wants_color(&headers, force_txt),
         )))
     } else {
-        Ok(html_page(html::project_page(&state.site, &project, count)))
+        Ok(html_page(html::project_page(
+            &state.site,
+            &project,
+            count,
+            theme::Theme::from_headers(&headers),
+        )))
     }
 }
 
@@ -316,14 +337,34 @@ async fn style_sheet() -> impl IntoResponse {
     )
 }
 
-async fn favicon() -> impl IntoResponse {
+async fn keys_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        KEYS_JS,
+    )
+}
+
+async fn favicon(Query(query): Query<FaviconQuery>, headers: HeaderMap) -> impl IntoResponse {
+    let theme = query
+        .t
+        .as_deref()
+        .and_then(theme::Theme::get)
+        .unwrap_or_else(|| theme::Theme::from_headers(&headers));
     (
         [
             (header::CONTENT_TYPE, "image/svg+xml"),
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
-        FAVICON,
+        theme.favicon_svg(),
     )
+}
+
+#[derive(serde::Deserialize)]
+struct FaviconQuery {
+    t: Option<String>,
 }
 
 async fn favicon_ico() -> impl IntoResponse {
@@ -363,6 +404,7 @@ async fn render_home(
             &profile,
             &projects,
             count,
+            theme::Theme::from_headers(&headers),
         )))
     }
 }
@@ -386,6 +428,7 @@ async fn render_projects(
             &projects,
             count,
             "Work worth opening. Context lives on the project page, not the README.",
+            theme::Theme::from_headers(&headers),
         )))
     }
 }
@@ -404,7 +447,38 @@ async fn render_about(
             negotiate::wants_color(&headers, force_txt),
         )))
     } else {
-        Ok(html_page(html::about(&state.site, &profile, count)))
+        Ok(html_page(html::about(
+            &state.site,
+            &profile,
+            count,
+            theme::Theme::from_headers(&headers),
+        )))
+    }
+}
+
+async fn render_themes(
+    state: AppState,
+    headers: HeaderMap,
+    force_txt: bool,
+) -> Result<Response, AppError> {
+    let theme = theme::Theme::from_headers(&headers);
+    let profile = state.db.profile().await?;
+    let projects = state.db.highlighted_projects().await?;
+    let count = state.db.project_count().await?;
+    if negotiate::wants_text(&headers, force_txt) {
+        Ok(plain(text::themes_index(
+            &state.site,
+            theme,
+            negotiate::wants_color(&headers, force_txt),
+        )))
+    } else {
+        Ok(html_page(html::themes_index(
+            &state.site,
+            &profile,
+            &projects,
+            count,
+            theme,
+        )))
     }
 }
 
@@ -442,7 +516,13 @@ async fn render_not_found(
         (
             StatusCode::NOT_FOUND,
             [vary()],
-            html::not_found(&state.site, path, count, detail),
+            html::not_found(
+                &state.site,
+                path,
+                count,
+                detail,
+                theme::Theme::from_headers(headers),
+            ),
         )
             .into_response()
     }
@@ -450,6 +530,31 @@ async fn render_not_found(
 
 fn html_page(markup: maud::Markup) -> Response {
     ([vary()], markup).into_response()
+}
+
+async fn set_theme(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(theme) = theme::Theme::get(&slug) else {
+        return render_not_found(
+            &state,
+            &headers,
+            &format!("/theme/{slug}"),
+            false,
+            "no such theme.",
+        )
+        .await;
+    };
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::LOCATION, theme::safe_return(&headers)),
+            (header::SET_COOKIE, theme.cookie_header()),
+        ],
+    )
+        .into_response()
 }
 
 fn plain(body: String) -> Response {
@@ -480,9 +585,14 @@ mod tests {
     #[test]
     fn css_budget() {
         assert!(
-            super::STYLE.len() <= 10_240,
+            super::STYLE.len() <= 14_336,
             "style.css is {} bytes",
             super::STYLE.len()
+        );
+        assert!(
+            super::KEYS_JS.len() <= 4_096,
+            "keys.js is {} bytes",
+            super::KEYS_JS.len()
         );
     }
 }

@@ -4,6 +4,7 @@ use hldr_core::{Profile, Project, ProjectSummary};
 
 use crate::Site;
 use crate::html::display_url;
+use crate::theme::Theme;
 
 pub struct Tty {
     color: bool,
@@ -136,6 +137,27 @@ pub fn projects_index(site: &Site, projects: &[ProjectSummary], color: bool) -> 
     writeln!(out, "  {}", t.green("Projects")).ok();
     writeln!(out).ok();
     write_projects(&mut out, &t, projects);
+    writeln!(out).ok();
+    writeln!(out, "{} {}", t.green("$"), t.gray("█")).ok();
+    out
+}
+
+pub fn themes_index(site: &Site, current: &Theme, color: bool) -> String {
+    let t = Tty::new(color);
+    let mut out = String::new();
+    let prev = current.prev();
+    let next = current.next();
+    let n = current.index() + 1;
+    let total = crate::theme::THEMES.len();
+    prompt(&mut out, &t, site, "/theme");
+    writeln!(out).ok();
+    writeln!(out, "  {}", t.green("Themes")).ok();
+    writeln!(out).ok();
+    writeln!(out, "    {} {}", t.gray("←"), t.white(prev.name)).ok();
+    writeln!(out, "  {} {}", t.yellow("*"), t.green(current.name)).ok();
+    writeln!(out, "    {} {}", t.gray("→"), t.white(next.name)).ok();
+    writeln!(out).ok();
+    writeln!(out, "  {}", t.gray(&format!("{n} / {total}"))).ok();
     writeln!(out).ok();
     writeln!(out, "{} {}", t.green("$"), t.gray("█")).ok();
     out
@@ -332,4 +354,47 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
         }
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Site;
+    use hldr_core::Profile;
+    use hldr_core::types::ProfileLinks;
+
+    fn site() -> Site {
+        Site {
+            origin: "https://hvpaiva.dev".into(),
+            host: "hvpaiva.dev".into(),
+        }
+    }
+
+    fn profile() -> Profile {
+        Profile {
+            name: "Test".into(),
+            headline: "eng".into(),
+            bio: "bio".into(),
+            about_source: String::new(),
+            about_html: String::new(),
+            about_text: String::new(),
+            email: None,
+            links: ProfileLinks::default(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn color_uses_ansi_16_not_truecolor() {
+        let out = home(&site(), &profile(), &[], true);
+        assert!(out.contains("\x1b[1;32m"), "prompt should use ANSI green");
+        assert!(
+            !out.contains("\x1b[38;2;"),
+            "truecolor would override the terminal theme"
+        );
+        assert!(
+            !out.contains("\x1b[38;5;"),
+            "256-color would override the terminal theme"
+        );
+    }
 }
