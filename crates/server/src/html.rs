@@ -110,7 +110,9 @@ pub fn home(site: &Site, profile: &Profile, projects: &[ProjectSummary], count: 
             (prompt(site, "/"))
             div.response-block {
                 section.hero {
-                    pre.ascii-banner role="img" aria-label="HLDR" { (ASCII_BANNER) }
+                    div.ascii-wrap role="img" aria-label="HLDR" {
+                        pre.ascii-banner aria-hidden="true" { (ASCII_BANNER) }
+                    }
                     div.hero-info {
                         p.hero-subtitle { (profile.name) }
                         p.hero-tagline { (profile.headline) }
