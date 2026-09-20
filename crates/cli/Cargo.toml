@@ -1,0 +1,13 @@
+[package]
+name = "hldr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+hldr-core.workspace = true
+
+[lints]
+workspace = true

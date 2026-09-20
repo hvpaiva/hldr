@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --workspace -- -D warnings
+      - run: cargo test --workspace
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  notify-apollo:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch apollo
+        env:
+          GH_TOKEN: ${{ secrets.APOLLO_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/hvpaiva/apollo/dispatches \
+            --input - <<EOF
+          {
+            "event_type": "hldr-main",
+            "client_payload": {
+              "sha": "${GITHUB_SHA}"
+            }
+          }
+          EOF

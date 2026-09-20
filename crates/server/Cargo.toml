@@ -1,0 +1,18 @@
+[package]
+name = "hldr-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum = "0.8.9"
+hldr-core.workspace = true
+maud = { version = "0.27.0", features = ["axum"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower-http = { version = "0.7.1", features = ["trace"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+
+[lints]
+workspace = true

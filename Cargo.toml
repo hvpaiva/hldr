@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/server", "crates/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/hvpaiva/hldr"
+
+[workspace.dependencies]
+hldr-core = { path = "crates/core" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
