@@ -52,6 +52,7 @@ pub fn layout(page: Page<'_>, body: Markup) -> Markup {
                 meta property="og:url" content=(canonical);
                 meta property="og:type" content="website";
                 meta name="twitter:card" content="summary";
+                link rel="icon" href="/favicon.ico" sizes="32x32";
                 link rel="icon" href="/favicon.svg" type="image/svg+xml";
                 link rel="stylesheet" href="/style.css";
                 @if let Some(json_ld) = &page.json_ld {

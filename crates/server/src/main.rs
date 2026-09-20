@@ -19,6 +19,7 @@ mod text;
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 const STYLE: &str = include_str!("../assets/style.css");
 const FAVICON: &str = include_str!("../assets/favicon.svg");
+const FAVICON_ICO: &[u8] = include_bytes!("../assets/favicon.ico");
 
 #[derive(Clone)]
 struct AppState {
@@ -110,6 +111,7 @@ fn router(state: AppState) -> Router {
         .route("/readyz", get(readyz))
         .route("/style.css", get(style_sheet))
         .route("/favicon.svg", get(favicon))
+        .route("/favicon.ico", get(favicon_ico))
         .route("/sitemap.xml", get(sitemap))
         .route("/robots.txt", get(robots))
         .route("/api/v1/projects", get(api_projects))
@@ -321,6 +323,16 @@ async fn favicon() -> impl IntoResponse {
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
         FAVICON,
+    )
+}
+
+async fn favicon_ico() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "image/vnd.microsoft.icon"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        FAVICON_ICO,
     )
 }
 
