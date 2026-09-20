@@ -16,11 +16,11 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
       craneLib = crane.mkLib pkgs;
-      crate = import ./nix/crate.nix { inherit craneLib; };
+      crate = import ./nix/crate.nix { inherit craneLib pkgs; };
     in
     {
       overlays.default = _final: prev: {
-        hldr = (import ./nix/crate.nix { craneLib = crane.mkLib prev; }).hldr;
+        hldr = (import ./nix/crate.nix { craneLib = crane.mkLib prev; pkgs = prev; }).hldr;
       };
 
       packages.${system} = {

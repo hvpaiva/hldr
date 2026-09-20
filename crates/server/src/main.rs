@@ -1,7 +1,8 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use axum::{Json, Router, routing::get};
-use hldr_core::Health;
+use hldr_core::{Db, Health};
 use maud::{DOCTYPE, Markup, html};
 use tokio::signal::unix::{SignalKind, signal};
 use tower_http::trace::TraceLayer;
@@ -23,10 +24,28 @@ async fn main() {
         .parse()
         .expect("HLDR_ADDR must be a socket address");
 
+    let db_path = database_path();
+    let content_dir = content_dir();
+
+    let db = Db::open(&db_path).await.expect("failed to open database");
+    let report = hldr_core::index::sync(db.pool(), &content_dir)
+        .await
+        .expect("failed to index content");
+    tracing::info!(
+        profile_updated = report.profile_updated,
+        projects_upserted = report.projects_upserted,
+        projects_skipped = report.projects_skipped,
+        projects_deleted = report.projects_deleted,
+        db = %db_path.display(),
+        content = %content_dir.display(),
+        "content indexed"
+    );
+
     let app = Router::new()
-        .route("/", get(index))
+        .route("/", get(home))
         .route("/healthz", get(healthz))
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http())
+        .with_state(db);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -40,11 +59,25 @@ async fn main() {
         .expect("server error");
 }
 
+fn database_path() -> PathBuf {
+    if let Ok(path) = std::env::var("HLDR_DATABASE") {
+        return PathBuf::from(path);
+    }
+    let dir = std::env::var("STATE_DIRECTORY").unwrap_or_else(|_| ".".to_owned());
+    PathBuf::from(dir).join("hldr.db")
+}
+
+fn content_dir() -> PathBuf {
+    std::env::var("HLDR_CONTENT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("content"))
+}
+
 async fn healthz() -> Json<Health> {
     Json(Health::ok())
 }
 
-async fn index() -> Markup {
+async fn home() -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {

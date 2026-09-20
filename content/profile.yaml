@@ -1,0 +1,15 @@
+name: Highlander Paiva
+headline: senior platform engineer → devsecops / appsec
+bio: >
+  Platform, CI/CD, and the security of the pipeline. The site is a sample of
+  the craft, not a brochure.
+email: contact@hvpaiva.dev
+links:
+  github: https://github.com/hvpaiva
+  linkedin: https://linkedin.com/in/hvpaiva
+  source: https://github.com/hvpaiva/hvpaiva
+about: |
+  Design → front-end → back-end → full-stack → platform → DevSecOps.
+
+  The through-line is making systems operable: pipelines that are boring,
+  hosts that can be rebuilt, and interfaces that live in the terminal.

@@ -1,5 +1,16 @@
 use serde::Serialize;
 
+pub mod db;
+pub mod index;
+pub mod types;
+
+mod error;
+mod markdown;
+
+pub use db::Db;
+pub use error::Error;
+pub use index::SyncReport;
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Copy, Serialize)]

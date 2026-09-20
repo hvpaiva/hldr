@@ -22,6 +22,12 @@ in
       default = "127.0.0.1:8080";
       description = "Bind address for the public listener.";
     };
+
+    contentDir = lib.mkOption {
+      type = lib.types.path;
+      default = "${cfg.package}/share/hldr/content";
+      description = "Directory of desired-state markdown and YAML.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -32,6 +38,7 @@ in
       environment = {
         HLDR_ADDR = cfg.listenAddress;
         HLDR_LOG = "info";
+        HLDR_CONTENT_DIR = "${cfg.contentDir}";
       };
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/hldr-server";
