@@ -1,0 +1,15 @@
+.git
+.github
+.direnv
+target
+result
+result-*
+nix
+flake.nix
+flake.lock
+deny.toml
+*.db
+*.db-shm
+*.db-wal
+**/*.md
+!content/**/*.md

@@ -1,0 +1,40 @@
+FROM rust:1-bookworm AS builder
+WORKDIR /src
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates/core/Cargo.toml crates/core/Cargo.toml
+COPY crates/server/Cargo.toml crates/server/Cargo.toml
+COPY crates/cli/Cargo.toml crates/cli/Cargo.toml
+RUN mkdir -p crates/core/src crates/server/src crates/cli/src \
+    && echo "pub fn _dummy() {}" > crates/core/src/lib.rs \
+    && echo "fn main() {}" > crates/server/src/main.rs \
+    && echo "fn main() {}" > crates/cli/src/main.rs \
+    && cargo build --release --locked -p hldr-server \
+    && rm -rf crates
+
+COPY crates crates
+COPY migrations migrations
+RUN cargo build --release --locked -p hldr-server
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 hldr \
+    && useradd --uid 1000 --gid 1000 --home-dir /app --no-create-home hldr \
+    && mkdir -p /var/lib/hldr \
+    && chown hldr:hldr /var/lib/hldr
+
+COPY --from=builder /src/target/release/hldr-server /usr/local/bin/hldr-server
+COPY content /app/content
+
+USER 1000:1000
+ENV HLDR_ADDR=0.0.0.0:8080 \
+    HLDR_CONTENT_DIR=/app/content \
+    HLDR_DATABASE=/var/lib/hldr/hldr.db \
+    HLDR_ORIGIN=https://hvpaiva.dev \
+    HLDR_LOG=info
+EXPOSE 8080
+HEALTHCHECK --interval=2s --timeout=2s --start-period=5s --retries=15 \
+    CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
+CMD ["hldr-server"]

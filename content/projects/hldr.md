@@ -11,9 +11,9 @@ github: hvpaiva/hldr
 
 ## What it is
 
-Personal site served as a systemd unit on a NixOS host. Content lives as
-markdown in git; runtime state lives in SQLite. Administration is a CLI
-in the kubectl shape, not a web panel.
+Personal site served with Kamal on a NixOS host. Content lives as markdown
+in git and ships in the image; runtime state lives in SQLite.
+Administration is a CLI in the kubectl shape, not a web panel.
 
 The public surface is HTML rendered on the server. No JavaScript is
 required to read it. `curl hvpaiva.dev` is a first-class interface.
@@ -22,13 +22,14 @@ required to read it. `curl hvpaiva.dev` is a first-class interface.
 
 A site that is also a sample of the craft. If the headers are sloppy or
 the deploy is a ritual, it contradicts the résumé. The host is rebuilt
-from a flake; a push to `main` is what turns the unit.
+from a flake; a merge to `main` is what turns production.
 
 ## Decisions
 
 The app and the machine are different repositories. hldr is public and
-describes the program. apollo is private and describes the VPS. Push on
-hldr dispatches; apollo pins the SHA and deploys.
+describes the program. apollo is private and describes the VPS. hldr does
+not import apollo. A push to `staging` deploys the Tailscale preview; a
+merge to `main` deploys hvpaiva.dev.
 
 SQLite opened in WAL, indexed on boot. Desired state is files; observed
 state is the database. YAML is `serde-saphyr` because the old serde_yaml

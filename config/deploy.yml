@@ -1,0 +1,43 @@
+service: hldr
+image: hvpaiva/hldr
+
+servers:
+  web:
+    hosts:
+      - 72.61.46.31
+
+proxy:
+  ssl: true
+  host: hvpaiva.dev
+  app_port: 8080
+  healthcheck:
+    path: /healthz
+  run:
+    bind_ips:
+      - 72.61.46.31
+
+registry:
+  server: ghcr.io
+  username: hvpaiva
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+builder:
+  arch: amd64
+  cache:
+    type: gha
+    options: mode=max
+
+ssh:
+  user: hvpaiva
+
+env:
+  clear:
+    HLDR_ADDR: 0.0.0.0:8080
+    HLDR_CONTENT_DIR: /app/content
+    HLDR_DATABASE: /var/lib/hldr/hldr.db
+    HLDR_ORIGIN: https://hvpaiva.dev
+    HLDR_LOG: info
+
+volumes:
+  - /var/lib/hldr:/var/lib/hldr
