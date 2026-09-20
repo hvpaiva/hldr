@@ -28,6 +28,12 @@ in
       default = "${cfg.package}/share/hldr/content";
       description = "Directory of desired-state markdown and YAML.";
     };
+
+    origin = lib.mkOption {
+      type = lib.types.str;
+      default = "https://hvpaiva.dev";
+      description = "Canonical public origin for sitemap, robots, and Open Graph URLs.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -39,6 +45,7 @@ in
         HLDR_ADDR = cfg.listenAddress;
         HLDR_LOG = "info";
         HLDR_CONTENT_DIR = "${cfg.contentDir}";
+        HLDR_ORIGIN = cfg.origin;
       };
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/hldr-server";

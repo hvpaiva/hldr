@@ -16,6 +16,15 @@ impl ProjectStatus {
             Self::Archived => "archived",
         }
     }
+
+    pub fn parse(s: &str) -> Result<Self, crate::Error> {
+        match s {
+            "active" => Ok(Self::Active),
+            "wip" => Ok(Self::Wip),
+            "archived" => Ok(Self::Archived),
+            _ => Err(crate::Error::Invariant("projects.status")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

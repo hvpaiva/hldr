@@ -13,3 +13,6 @@ about: |
 
   The through-line is making systems operable: pipelines that are boring,
   hosts that can be rebuilt, and interfaces that live in the terminal.
+
+  Stack I actually use: Rust, NixOS, containers when they earn their
+  keep, GitHub Actions, and enough Kubernetes to not pretend otherwise.

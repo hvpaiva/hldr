@@ -14,6 +14,8 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     Frontmatter(&'static str),
+    #[error("database invariant: {0}")]
+    Invariant(&'static str),
     #[error("{path}: {message}", path = path.display())]
     File { path: PathBuf, message: String },
 }

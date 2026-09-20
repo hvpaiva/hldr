@@ -9,6 +9,8 @@ repository.workspace = true
 axum = "0.8.9"
 hldr-core.workspace = true
 maud = { version = "0.27.0", features = ["axum"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.145"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 tower-http = { version = "0.7.1", features = ["trace"] }
 tracing = "0.1.44"

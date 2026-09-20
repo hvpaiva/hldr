@@ -13,7 +13,8 @@ let
       || lib.hasInfix "/migrations/" p
       || lib.hasSuffix "/migrations" p
       || lib.hasInfix "/content/" p
-      || lib.hasSuffix "/content" p;
+      || lib.hasSuffix "/content" p
+      || lib.hasInfix "/crates/server/assets/" p;
   };
 in
 rec {
