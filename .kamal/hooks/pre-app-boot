@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[ "${KAMAL_DESTINATION:-}" = "staging" ] || exit 0
+
+# proxy: false publishes 127.0.0.1:8081. Kamal still boots the new replica
+# first, so the bind fails unless the current one is already gone.
+ssh_user="${KAMAL_SSH_USER:-hvpaiva}"
+IFS=',' read -ra hosts <<< "${KAMAL_HOSTS:-}"
+for host in "${hosts[@]}"; do
+  [ -n "$host" ] || continue
+  ssh -o BatchMode=yes "${ssh_user}@${host}" bash -s <<'REMOTE'
+set -euo pipefail
+filter=(--filter label=service=hldr --filter label=destination=staging)
+created=$(docker ps -aq "${filter[@]}" --filter status=created)
+[ -n "$created" ] && docker rm -f $created
+running=$(docker ps -q "${filter[@]}")
+[ -n "$running" ] && docker stop $running
+REMOTE
+done

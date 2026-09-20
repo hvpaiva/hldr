@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
-      url: ${{ github.ref == 'refs/heads/main' && 'https://hvpaiva.dev' || 'https://apollo.tailf3b4e7.ts.net' }}
+      url: ${{ github.ref == 'refs/heads/main' && 'https://hvpaiva.dev' || 'https://hldr.apollo.hvpaiva.dev' }}
     permissions:
       contents: read
       packages: read
