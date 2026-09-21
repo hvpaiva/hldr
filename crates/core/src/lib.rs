@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+pub mod api;
 pub mod db;
 pub mod index;
 pub mod store;
