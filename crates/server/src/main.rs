@@ -175,7 +175,7 @@ async fn security_headers(request: Request, next: Next) -> Response {
 impl Site {
     fn from_env() -> Self {
         let origin = std::env::var("HLDR_ORIGIN")
-            .unwrap_or_else(|_| "https://hvpaiva.dev".to_owned())
+            .unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned())
             .trim_end_matches('/')
             .to_owned();
         let host = origin
