@@ -6,6 +6,10 @@ HTML in a browser. Content is markdown in git; runtime state lives in
 SQLite. Administration is a CLI in the kubectl shape; there
 is no web panel. JavaScript is not required to read the pages.
 
+The JSON API is private. It has no authentication of its own: it listens
+apart from the site and is reachable only through the tailnet, so the CLI
+works from tailnet machines only.
+
 The site is a sample of the craft. A push to `main` that changes the site
 is a release: checked, built, deployed, and tagged `vX.Y.Z` once
 production is healthy. The tag is the version; nothing is committed back.
@@ -33,6 +37,12 @@ Listens on `127.0.0.1:8080`. `HLDR_ADDR` overrides. `/healthz` does not
 touch the database; `/readyz` does. Both report `version` and `revision`.
 SQLite defaults to `./hldr.db`. `HLDR_ORIGIN` sets the canonical URL and
 defaults to the local listener.
+
+The private API (`/api/v1`, and `/healthz`) listens on `127.0.0.1:8081`.
+`HLDR_API_ADDR` overrides, as `host:port` or `unix:/absolute/path`. A unix
+socket path is taken over from whatever process held it, so a new container
+can boot while the old one still serves; a non-socket file at the path is
+an error.
 
 ```
 cargo run -p hldr -- version
@@ -82,7 +92,9 @@ gh workflow run deploy -f version=X.Y.Z
 
 The target is `apollo.hvpaiva.dev`, reached as `deploy` with the host keys
 in `config/known_hosts`; a rebuilt host has new keys, so update them there.
-App data lives in the `hldr_data` volume. From a
+App data lives in the `hldr_data` volume. The private API is the socket
+`/run/tailnet/8443.sock`, which apollo serves at
+`https://apollo.<tailnet>.ts.net:8443` to the tailnet only. From a
 laptop, with a key authorized for `deploy`:
 
 ```

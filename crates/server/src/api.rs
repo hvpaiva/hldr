@@ -1,147 +1,95 @@
 use axum::Json;
-use axum::http::StatusCode;
+use axum::Router;
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use hldr_core::{Profile, Project, ProjectSummary};
-use serde::Serialize;
+use axum::routing::get;
+use hldr_core::api::{self, Problem};
+use tower_http::trace::TraceLayer;
 
-#[derive(Serialize)]
-struct Resource<M, S> {
-    kind: &'static str,
-    metadata: M,
-    spec: S,
-    status: serde_json::Value,
+use crate::{AppError, AppState, healthz};
+
+/// The private API. Reachable only through the tailnet (#30); the public
+/// listener never routes here.
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/api/v1/api-resources", get(api_resources))
+        .route("/api/v1/schema", get(schema))
+        .route("/api/v1/projects", get(projects))
+        .route("/api/v1/projects/{slug}", get(project))
+        .route("/api/v1/profile", get(profile))
+        .route("/api/v1/posts", get(posts))
+        .route("/api/v1/posts/{slug}", get(post))
+        .fallback(fallback)
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
 }
 
-#[derive(Serialize)]
-struct List<T> {
-    kind: &'static str,
-    items: Vec<T>,
+async fn api_resources() -> Json<api::List<api::ApiResource>> {
+    Json(api::resources())
 }
 
-#[derive(Serialize)]
-struct ProjectMeta<'a> {
-    slug: &'a str,
-    created_at: &'a str,
-    updated_at: &'a str,
+async fn schema() -> Json<serde_json::Map<String, serde_json::Value>> {
+    Json(api::schemas())
 }
 
-#[derive(Serialize)]
-struct ProjectSpec<'a> {
-    title: &'a str,
-    tagline: &'a str,
-    status: &'a str,
-    highlight: Option<i64>,
-    tags: &'a [String],
-    links: &'a hldr_core::types::ProjectLinks,
-    github: Option<&'a str>,
+async fn projects(State(state): State<AppState>) -> Result<Response, AppError> {
+    let items = state.db.projects().await?;
+    Ok(Json(api::project_list(&items)).into_response())
 }
 
-#[derive(Serialize)]
-struct ProfileMeta<'a> {
-    updated_at: &'a str,
+async fn project(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> Result<Response, AppError> {
+    let Some(project) = state.db.project(&slug).await? else {
+        return Ok(not_found(format!("project '{slug}' not found")));
+    };
+    Ok(Json(api::Project::from(&project)).into_response())
 }
 
-#[derive(Serialize)]
-struct ProfileSpec<'a> {
-    name: &'a str,
-    headline: &'a str,
-    bio: &'a str,
-    about: &'a str,
-    email: Option<&'a str>,
-    links: &'a hldr_core::types::ProfileLinks,
+async fn profile(State(state): State<AppState>) -> Result<Response, AppError> {
+    let profile = state.db.profile().await?;
+    Ok(Json(api::Profile::from(&profile)).into_response())
 }
 
-#[derive(Serialize)]
-struct Problem {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    title: &'static str,
-    status: u16,
-    detail: String,
+async fn posts(State(state): State<AppState>) -> Result<Response, AppError> {
+    if state.db.blog_enabled().await? {
+        return Ok(not_found("no posts"));
+    }
+    Ok(not_found("blog is disabled"))
 }
 
-pub fn projects(items: &[ProjectSummary]) -> impl IntoResponse {
-    Json(List {
-        kind: "ProjectList",
-        items: items.iter().map(project_summary).collect(),
-    })
+async fn post(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> Result<Response, AppError> {
+    if state.db.blog_enabled().await? {
+        return Ok(not_found(format!("post '{slug}' not found")));
+    }
+    Ok(not_found("blog is disabled"))
 }
 
-pub fn project(item: &Project) -> impl IntoResponse {
-    Json(Resource {
-        kind: "Project",
-        metadata: ProjectMeta {
-            slug: &item.slug,
-            created_at: &item.created_at,
-            updated_at: &item.updated_at,
-        },
-        spec: ProjectSpec {
-            title: &item.title,
-            tagline: &item.tagline,
-            status: item.status.as_str(),
-            highlight: item.highlight,
-            tags: &item.tags,
-            links: &item.links,
-            github: item.github_repo.as_deref(),
-        },
-        status: serde_json::json!({}),
-    })
-}
-
-pub fn profile(item: &Profile) -> impl IntoResponse {
-    Json(Resource {
-        kind: "Profile",
-        metadata: ProfileMeta {
-            updated_at: &item.updated_at,
-        },
-        spec: ProfileSpec {
-            name: &item.name,
-            headline: &item.headline,
-            bio: &item.bio,
-            about: &item.about_source,
-            email: item.email.as_deref(),
-            links: &item.links,
-        },
-        status: serde_json::json!({}),
-    })
+async fn fallback() -> Response {
+    not_found("no such endpoint")
 }
 
 pub fn not_found(detail: impl Into<String>) -> Response {
     problem(StatusCode::NOT_FOUND, "Not Found", detail)
 }
 
-pub fn problem(status: StatusCode, title: &'static str, detail: impl Into<String>) -> Response {
+pub fn problem(status: StatusCode, title: &str, detail: impl Into<String>) -> Response {
     let body = Problem {
-        kind: "about:blank",
-        title,
+        kind: "about:blank".to_owned(),
+        title: title.to_owned(),
         status: status.as_u16(),
         detail: detail.into(),
     };
     (
         status,
-        [("content-type", "application/problem+json")],
+        [(header::CONTENT_TYPE, "application/problem+json")],
         Json(body),
     )
         .into_response()
-}
-
-fn project_summary(item: &ProjectSummary) -> Resource<ProjectMeta<'_>, ProjectSpec<'_>> {
-    Resource {
-        kind: "Project",
-        metadata: ProjectMeta {
-            slug: &item.slug,
-            created_at: &item.created_at,
-            updated_at: &item.updated_at,
-        },
-        spec: ProjectSpec {
-            title: &item.title,
-            tagline: &item.tagline,
-            status: item.status.as_str(),
-            highlight: item.highlight,
-            tags: &item.tags,
-            links: &item.links,
-            github: item.github_repo.as_deref(),
-        },
-        status: serde_json::json!({}),
-    }
 }

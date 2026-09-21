@@ -14,10 +14,12 @@ use tracing_subscriber::EnvFilter;
 
 mod api;
 mod html;
+mod listen;
 mod source;
 mod theme;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
+const DEFAULT_API_ADDR: &str = "127.0.0.1:8081";
 const STYLE: &str = include_str!("../assets/style.css");
 const KEYS_JS: &str = include_str!("../assets/keys.js");
 const VIM_JS: &str = include_str!("../assets/vim.js");
@@ -63,6 +65,10 @@ async fn main() {
         .unwrap_or_else(|_| DEFAULT_ADDR.to_owned())
         .parse()
         .expect("HLDR_ADDR must be a socket address");
+    let api_addr: listen::ListenAddr = std::env::var("HLDR_API_ADDR")
+        .unwrap_or_else(|_| DEFAULT_API_ADDR.to_owned())
+        .parse()
+        .expect("HLDR_API_ADDR must be host:port or unix:/path");
 
     let db_path = database_path();
     let content_dir = content_dir();
@@ -85,26 +91,67 @@ async fn main() {
         db,
         site: Site::from_env(),
     };
-    let app = router(state);
+    let site = site_router(state.clone());
+    let private = api::router(state);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("failed to bind HLDR_ADDR");
 
+    let (stop, stopped) = tokio::sync::watch::channel(());
+    tokio::spawn(async move {
+        terminate().await;
+        let _ = stop.send(());
+    });
+    let shutdown = move || {
+        let mut stopped = stopped.clone();
+        async move {
+            let _ = stopped.changed().await;
+        }
+    };
+
+    // Bound last, once the database and the index are ready: on a unix
+    // socket this takes the path over from the container being replaced.
+    let api_server = match &api_addr {
+        listen::ListenAddr::Tcp(api_tcp) => {
+            let api_listener = tokio::net::TcpListener::bind(api_tcp)
+                .await
+                .expect("failed to bind HLDR_API_ADDR");
+            tokio::spawn(
+                axum::serve(api_listener, private)
+                    .with_graceful_shutdown(shutdown())
+                    .into_future(),
+            )
+        }
+        listen::ListenAddr::Unix(path) => {
+            let api_listener = listen::bind_unix(path).expect("failed to bind HLDR_API_ADDR");
+            tokio::spawn(
+                axum::serve(api_listener, private)
+                    .with_graceful_shutdown(shutdown())
+                    .into_future(),
+            )
+        }
+    };
+
     tracing::info!(
         %addr,
+        %api_addr,
         version = hldr_core::VERSION,
         revision = hldr_core::REVISION,
         "hldr-server listening"
     );
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(terminate())
+    axum::serve(listener, site)
+        .with_graceful_shutdown(shutdown())
         .await
         .expect("server error");
+    api_server
+        .await
+        .expect("api server task panicked")
+        .expect("api server error");
 }
 
-fn router(state: AppState) -> Router {
+fn site_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(home))
         .route("/projects", get(projects))
@@ -125,11 +172,6 @@ fn router(state: AppState) -> Router {
         .route("/favicon.ico", get(favicon_ico))
         .route("/sitemap.xml", get(sitemap))
         .route("/robots.txt", get(robots))
-        .route("/api/v1/projects", get(api_projects))
-        .route("/api/v1/projects/{slug}", get(api_project))
-        .route("/api/v1/profile", get(api_profile))
-        .route("/api/v1/posts", get(api_posts))
-        .route("/api/v1/posts/{slug}", get(api_post))
         .fallback(not_found)
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(security_headers))
@@ -314,43 +356,6 @@ async fn blog_post(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     blog_disabled(&state, &headers, &format!("/blog/{slug}")).await
-}
-
-async fn api_projects(State(state): State<AppState>) -> Result<Response, AppError> {
-    let items = state.db.projects().await?;
-    Ok(api::projects(&items).into_response())
-}
-
-async fn api_project(
-    State(state): State<AppState>,
-    Path(slug): Path<String>,
-) -> Result<Response, AppError> {
-    let Some(project) = state.db.project(&slug).await? else {
-        return Ok(api::not_found(format!("project '{slug}' not found")));
-    };
-    Ok(api::project(&project).into_response())
-}
-
-async fn api_profile(State(state): State<AppState>) -> Result<Response, AppError> {
-    let profile = state.db.profile().await?;
-    Ok(api::profile(&profile).into_response())
-}
-
-async fn api_posts(State(state): State<AppState>) -> Result<Response, AppError> {
-    if state.db.blog_enabled().await? {
-        return Ok(api::not_found("no posts"));
-    }
-    Ok(api::not_found("blog is disabled"))
-}
-
-async fn api_post(
-    State(state): State<AppState>,
-    Path(slug): Path<String>,
-) -> Result<Response, AppError> {
-    if state.db.blog_enabled().await? {
-        return Ok(api::not_found(format!("post '{slug}' not found")));
-    }
-    Ok(api::not_found("blog is disabled"))
 }
 
 async fn sitemap(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
@@ -557,6 +562,98 @@ async fn terminate() {
 
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    async fn state() -> (tempfile::TempDir, AppState) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path().join("hldr.db")).await.unwrap();
+        let content = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        hldr_core::index::sync(db.pool(), &content).await.unwrap();
+        let site = Site {
+            origin: "https://example.test".to_owned(),
+            host: "example.test".to_owned(),
+        };
+        (dir, AppState { db, site })
+    }
+
+    async fn call(router: Router, path: &str) -> (StatusCode, String, serde_json::Value) {
+        let response = router
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, content_type, json)
+    }
+
+    #[tokio::test]
+    async fn site_does_not_serve_the_api() {
+        let (_dir, state) = state().await;
+        for path in ["/api/v1/projects", "/api/v1/schema", "/api/v1/profile"] {
+            let (status, content_type, _) = call(site_router(state.clone()), path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+            assert!(
+                content_type.starts_with("text/html"),
+                "{path}: {content_type}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn private_api_serves_resources() {
+        let (_dir, state) = state().await;
+
+        let (status, _, list) = call(api::router(state.clone()), "/api/v1/projects").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list["kind"], "ProjectList");
+        assert_eq!(list["items"][0]["metadata"]["slug"], "hldr");
+
+        let (status, _, project) = call(api::router(state.clone()), "/api/v1/projects/hldr").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(project["kind"], "Project");
+        assert_eq!(project["spec"]["highlight"], 1);
+
+        let (status, _, profile) = call(api::router(state.clone()), "/api/v1/profile").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(profile["kind"], "Profile");
+    }
+
+    #[tokio::test]
+    async fn private_api_serves_discovery() {
+        let (_dir, state) = state().await;
+
+        let (status, _, resources) =
+            call(api::router(state.clone()), "/api/v1/api-resources").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(resources["items"][0]["name"], "projects");
+
+        let (status, _, schema) = call(api::router(state.clone()), "/api/v1/schema").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(schema["Project"]["title"], "Project");
+    }
+
+    #[tokio::test]
+    async fn private_api_answers_problems() {
+        let (_dir, state) = state().await;
+        for path in ["/api/v1/projects/nope", "/api/v1/posts", "/nope"] {
+            let (status, content_type, body) = call(api::router(state.clone()), path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+            assert_eq!(content_type, "application/problem+json", "{path}");
+            assert_eq!(body["status"], 404, "{path}");
+        }
+    }
+
     #[test]
     fn css_budget() {
         assert!(
