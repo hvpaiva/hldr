@@ -78,6 +78,7 @@ fn collect_text<'a>(node: &'a AstNode<'a>, out: &mut String) {
         NodeValue::Paragraph | NodeValue::Heading(_) | NodeValue::Item(_)
     ) {
         push_newline(out);
+        out.push('\n');
     }
 }
 
