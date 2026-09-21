@@ -342,7 +342,7 @@
     }
     if (is("Neotree", "NvimTreeToggle", "NERDTreeToggle", "Lex", "Lexplore", "Ex", "Explore")) { toggleTree(); return; }
     if (is("Telescope", "FzfLua", "Files", "Pick")) { finder(); return; }
-    if (is("version", "ve")) { more(`HLDR v${version} (hvpaiva.dev)\nBuild type: Release · maud + axum + sqlite (WAL)\n\nFeatures: +curl +ansi16 +sqlite +markdown +colorschemes -javascript_required\n\n   system vimrc file: "content/profile.yaml"\n     user vimrc file: none. you're a visitor.`); return; }
+    if (is("version", "ve")) { more(`HLDR v${version} (hvpaiva.dev)\nBuild type: Release · maud + axum + sqlite (WAL)\n\nFeatures: +sqlite +markdown +colorschemes -javascript_required -curl\n\n   system vimrc file: "content/profile.yaml"\n     user vimrc file: none. you're a visitor.`); return; }
     if (is("smile")) { more(BANNER + "\n\n              thanks for reading the source."); return; }
     if (is("intro", "Alpha", "Dashboard")) { intro(); return; }
     if (is("q", "quit", "qa", "qall", "clo", "close")) { msg("this is a website. Close the tab, or stay: :help", "w"); return; }

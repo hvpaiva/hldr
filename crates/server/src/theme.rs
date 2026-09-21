@@ -591,23 +591,6 @@ impl Theme {
         )
     }
 
-    pub fn index(self) -> usize {
-        THEMES
-            .iter()
-            .position(|theme| theme.slug == self.slug)
-            .unwrap_or(0)
-    }
-
-    pub fn prev(self) -> &'static Theme {
-        let i = self.index();
-        &THEMES[(i + THEMES.len() - 1) % THEMES.len()]
-    }
-
-    pub fn next(self) -> &'static Theme {
-        let i = self.index();
-        &THEMES[(i + 1) % THEMES.len()]
-    }
-
     /// The palette as `--t-*` custom properties. Scoped with a prefix so
     /// carrying them on an element does not recolour that element; the
     /// colorscheme preview copies them onto `:root`.
@@ -781,16 +764,5 @@ mod tests {
         assert!(svg.contains("fill=\"#05182e\""));
         assert!(svg.contains("fill=\"#faa968\""));
         assert!(svg.contains(">HL</text>"));
-    }
-
-    #[test]
-    fn neighbors_wrap_around() {
-        let first = THEMES[0];
-        let last = THEMES[THEMES.len() - 1];
-        assert_eq!(first.prev().slug, last.slug);
-        assert_eq!(last.next().slug, first.slug);
-        let current = Theme::fallback();
-        assert_ne!(current.prev().slug, current.slug);
-        assert_ne!(current.next().slug, current.slug);
     }
 }

@@ -14,9 +14,7 @@ use tracing_subscriber::EnvFilter;
 
 mod api;
 mod html;
-mod negotiate;
 mod source;
-mod text;
 mod theme;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
@@ -110,10 +108,8 @@ fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(home))
         .route("/projects", get(projects))
-        .route("/projects.txt", get(projects_txt))
         .route("/projects/{slug}", get(project))
         .route("/about", get(about))
-        .route("/about.txt", get(about_txt))
         .route("/profile", get(profile_page))
         .route("/help", get(help_page))
         .route("/blog", get(blog))
@@ -121,7 +117,6 @@ fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/theme", get(themes))
-        .route("/theme.txt", get(themes_txt))
         .route("/theme/{slug}", get(set_theme))
         .route("/style.css", get(style_sheet))
         .route("/keys.js", get(keys_js))
@@ -221,76 +216,92 @@ async fn readyz(State(state): State<AppState>) -> Response {
 }
 
 async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    render_home(state, headers, false).await
-}
-
-async fn projects(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    render_projects(state, headers, false).await
-}
-
-async fn projects_txt(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    render_projects(state, headers, true).await
-}
-
-async fn about(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    render_about(state, headers, false).await
-}
-
-async fn about_txt(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    render_about(state, headers, true).await
-}
-
-async fn themes(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    render_themes(state, headers, false).await
-}
-
-async fn themes_txt(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    render_themes(state, headers, true).await
-}
-
-async fn project(
-    State(state): State<AppState>,
-    Path(raw): Path<String>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    let (slug, force_txt) = negotiate::strip_txt(&raw);
-    let Some(project) = state.db.project(slug).await? else {
-        return Ok(render_not_found(
-            &state,
-            &headers,
-            &format!("/projects/{raw}"),
-            force_txt,
-            &format!("{slug}: no such project"),
-        )
-        .await);
-    };
-    if negotiate::wants_text(&headers, force_txt) {
-        return Ok(plain(text::project_page(
-            &state.site,
-            &project,
-            negotiate::wants_color(&headers, force_txt),
-        )));
-    }
+    let profile = state.db.profile().await?;
+    let highlighted = state.db.highlighted_projects().await?;
     let (projects, blog_enabled) = tree_data(&state).await?;
     let tree = html::Tree {
         projects: &projects,
         blog_enabled,
     };
-    Ok(html_page(html::project_page(
+    Ok(html::home(
+        &state.site,
+        &tree,
+        &profile,
+        &highlighted,
+        theme::Theme::from_headers(&headers),
+    )
+    .into_response())
+}
+
+async fn projects(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
+    let (projects, blog_enabled) = tree_data(&state).await?;
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    Ok(html::projects_index(
+        &state.site,
+        &tree,
+        "Work worth opening. Context lives on the project page, not the README.",
+        theme::Theme::from_headers(&headers),
+    )
+    .into_response())
+}
+
+async fn about(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
+    let profile = state.db.profile().await?;
+    let (projects, blog_enabled) = tree_data(&state).await?;
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    Ok(html::about(
+        &state.site,
+        &tree,
+        &profile,
+        theme::Theme::from_headers(&headers),
+    )
+    .into_response())
+}
+
+async fn themes(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
+    let (projects, blog_enabled) = tree_data(&state).await?;
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    Ok(
+        html::themes_index(&state.site, &tree, theme::Theme::from_headers(&headers))
+            .into_response(),
+    )
+}
+
+async fn project(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let Some(project) = state.db.project(&slug).await? else {
+        return Ok(render_not_found(
+            &state,
+            &headers,
+            &format!("/projects/{slug}"),
+            &format!("{slug}: no such project"),
+        )
+        .await);
+    };
+    let (projects, blog_enabled) = tree_data(&state).await?;
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    Ok(html::project_page(
         &state.site,
         &tree,
         &project,
         theme::Theme::from_headers(&headers),
-    )))
+    )
+    .into_response())
 }
 
 async fn blog(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
@@ -389,53 +400,31 @@ async fn profile_page(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    if negotiate::wants_text(&headers, false) {
-        return Ok(browser_only(&state, &headers, "/profile").await);
-    }
     let profile = state.db.profile().await?;
     let (projects, blog_enabled) = tree_data(&state).await?;
     let tree = html::Tree {
         projects: &projects,
         blog_enabled,
     };
-    Ok(html_page(html::profile(
+    Ok(html::profile(
         &state.site,
         &tree,
         &profile,
         theme::Theme::from_headers(&headers),
-    )))
+    )
+    .into_response())
 }
 
 async fn help_page(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    if negotiate::wants_text(&headers, false) {
-        return Ok(browser_only(&state, &headers, "/help").await);
-    }
     let (projects, blog_enabled) = tree_data(&state).await?;
     let tree = html::Tree {
         projects: &projects,
         blog_enabled,
     };
-    Ok(html_page(html::help(
-        &state.site,
-        &tree,
-        theme::Theme::from_headers(&headers),
-    )))
-}
-
-/// Pages that only exist as HTML answer terminals with the text 404,
-/// until the curl view renders them as files (#28).
-async fn browser_only(state: &AppState, headers: &HeaderMap, path: &str) -> Response {
-    render_not_found(
-        state,
-        headers,
-        path,
-        true,
-        "this file only opens in a browser for now.",
-    )
-    .await
+    Ok(html::help(&state.site, &tree, theme::Theme::from_headers(&headers)).into_response())
 }
 
 async fn tree_data(state: &AppState) -> Result<(Vec<hldr_core::ProjectSummary>, bool), AppError> {
@@ -493,110 +482,7 @@ async fn favicon_ico() -> impl IntoResponse {
 }
 
 async fn not_found(State(state): State<AppState>, uri: Uri, headers: HeaderMap) -> Response {
-    let path = uri.path();
-    let (_, force_txt) = negotiate::strip_txt(path);
-    render_not_found(&state, &headers, path, force_txt, "path not found.").await
-}
-
-async fn render_home(
-    state: AppState,
-    headers: HeaderMap,
-    force_txt: bool,
-) -> Result<Response, AppError> {
-    let profile = state.db.profile().await?;
-    let highlighted = state.db.highlighted_projects().await?;
-    if negotiate::wants_text(&headers, force_txt) {
-        return Ok(plain(text::home(
-            &state.site,
-            &profile,
-            &highlighted,
-            negotiate::wants_color(&headers, force_txt),
-        )));
-    }
-    let (projects, blog_enabled) = tree_data(&state).await?;
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
-    Ok(html_page(html::home(
-        &state.site,
-        &tree,
-        &profile,
-        &highlighted,
-        theme::Theme::from_headers(&headers),
-    )))
-}
-
-async fn render_projects(
-    state: AppState,
-    headers: HeaderMap,
-    force_txt: bool,
-) -> Result<Response, AppError> {
-    let (projects, blog_enabled) = tree_data(&state).await?;
-    if negotiate::wants_text(&headers, force_txt) {
-        return Ok(plain(text::projects_index(
-            &state.site,
-            &projects,
-            negotiate::wants_color(&headers, force_txt),
-        )));
-    }
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
-    Ok(html_page(html::projects_index(
-        &state.site,
-        &tree,
-        "Work worth opening. Context lives on the project page, not the README.",
-        theme::Theme::from_headers(&headers),
-    )))
-}
-
-async fn render_about(
-    state: AppState,
-    headers: HeaderMap,
-    force_txt: bool,
-) -> Result<Response, AppError> {
-    let profile = state.db.profile().await?;
-    if negotiate::wants_text(&headers, force_txt) {
-        return Ok(plain(text::about(
-            &state.site,
-            &profile,
-            negotiate::wants_color(&headers, force_txt),
-        )));
-    }
-    let (projects, blog_enabled) = tree_data(&state).await?;
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
-    Ok(html_page(html::about(
-        &state.site,
-        &tree,
-        &profile,
-        theme::Theme::from_headers(&headers),
-    )))
-}
-
-async fn render_themes(
-    state: AppState,
-    headers: HeaderMap,
-    force_txt: bool,
-) -> Result<Response, AppError> {
-    let theme = theme::Theme::from_headers(&headers);
-    if negotiate::wants_text(&headers, force_txt) {
-        return Ok(plain(text::themes_index(
-            &state.site,
-            theme,
-            negotiate::wants_color(&headers, force_txt),
-        )));
-    }
-    let (projects, blog_enabled) = tree_data(&state).await?;
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
-    Ok(html_page(html::themes_index(&state.site, &tree, theme)))
+    render_not_found(&state, &headers, uri.path(), "path not found.").await
 }
 
 async fn blog_disabled(
@@ -604,52 +490,34 @@ async fn blog_disabled(
     headers: &HeaderMap,
     path: &str,
 ) -> Result<Response, AppError> {
-    if state.db.blog_enabled().await? {
-        return Ok(render_not_found(state, headers, path, false, "path not found.").await);
-    }
-    Ok(render_not_found(state, headers, path, false, "blog is disabled.").await)
+    let detail = if state.db.blog_enabled().await? {
+        "path not found."
+    } else {
+        "blog is disabled."
+    };
+    Ok(render_not_found(state, headers, path, detail).await)
 }
 
 async fn render_not_found(
     state: &AppState,
     headers: &HeaderMap,
     path: &str,
-    force_txt: bool,
     detail: &str,
 ) -> Response {
-    if negotiate::wants_text(headers, force_txt) {
-        (
-            StatusCode::NOT_FOUND,
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8"), vary()],
-            text::not_found(
-                &state.site,
-                negotiate::wants_color(headers, force_txt),
-                detail,
-            ),
-        )
-            .into_response()
-    } else {
-        (StatusCode::NOT_FOUND, [vary()], {
-            let projects = state.db.projects().await.unwrap_or_default();
-            let blog_enabled = state.db.blog_enabled().await.unwrap_or(false);
-            let tree = html::Tree {
-                projects: &projects,
-                blog_enabled,
-            };
-            html::not_found(
-                &state.site,
-                &tree,
-                path,
-                detail,
-                theme::Theme::from_headers(headers),
-            )
-        })
-            .into_response()
-    }
-}
-
-fn html_page(markup: maud::Markup) -> Response {
-    ([vary()], markup).into_response()
+    let projects = state.db.projects().await.unwrap_or_default();
+    let blog_enabled = state.db.blog_enabled().await.unwrap_or(false);
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    let page = html::not_found(
+        &state.site,
+        &tree,
+        path,
+        detail,
+        theme::Theme::from_headers(headers),
+    );
+    (StatusCode::NOT_FOUND, page).into_response()
 }
 
 async fn set_theme(
@@ -662,7 +530,6 @@ async fn set_theme(
             &state,
             &headers,
             &format!("/theme/{slug}"),
-            false,
             "no such theme.",
         )
         .await;
@@ -675,18 +542,6 @@ async fn set_theme(
         ],
     )
         .into_response()
-}
-
-fn plain(body: String) -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8"), vary()],
-        body,
-    )
-        .into_response()
-}
-
-fn vary() -> (header::HeaderName, &'static str) {
-    (header::VARY, "Accept, User-Agent")
 }
 
 async fn terminate() {

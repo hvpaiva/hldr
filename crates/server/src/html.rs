@@ -231,21 +231,6 @@ pub fn home(
     lines.push(html! { p {} });
     lines.push(html! { h2.h2 { span.mk { "## " } "Elsewhere" } });
     lines.extend(elsewhere(profile, true));
-    lines.push(html! { p {} });
-    lines.push(html! { h2.h2 { span.mk { "## " } "Also in a terminal" } });
-    lines.push(html! { p.c { "The same content over curl, plain text in 80 columns." } });
-    lines.push(html! { p.mk { "```sh" } });
-    for (path, label, comment) in [
-        ("/", "", "# README.md"),
-        ("/about", "/about", "# about.md"),
-        ("/projects", "/projects", "# projects/"),
-    ] {
-        let target = format!("{}{label}", site.host);
-        lines.push(html! {
-            p { span.n { "curl" } " " a href=(path) { (target) } (pad(&target, 26)) span.c { (comment) } }
-        });
-    }
-    lines.push(html! { p.mk { "```" } });
     layout(
         Page {
             site,
