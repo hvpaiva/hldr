@@ -2,42 +2,37 @@
 //! Every page is complete without JavaScript; `keys.js` and `vim.js` only
 //! add the keyboard layer on top.
 
-use hldr_core::{Profile, Project, ProjectSummary};
+use hldr_core::{Profile, Project, ProjectSummary, SiteConfig, Theme};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::Site;
 use crate::source;
-use crate::theme::{THEMES, Theme};
-
-const ASCII_BANNER: &str = "\
-ooooo ooooo ooooo
- 888   888   888
- 888   888   888
- 888ooo888   888
- 888   888   888     o
-o888o o888o o888oooo88
-
-ooooooooo  oooooooooo
- 888    88o 888    888
- 888    888 888oooo88
- 888    888 888  88o
-o888ooo88  o888o  88o8";
+use crate::theme;
 
 const WRAP: usize = 72;
 const TREE_OPEN_MAX: usize = 8;
 /// Commands that only exist once vim.js can run them.
 const JS_ONLY: [&str; 2] = ["find", "checkhealth"];
 
-/// What every page needs to draw the file tree.
+/// What every page needs around its buffer: the file tree and the site's
+/// identity.
 pub struct Tree<'a> {
     pub projects: &'a [ProjectSummary],
-    pub blog_enabled: bool,
+    pub site: &'a SiteConfig,
+    pub profile: &'a Profile,
+}
+
+impl Tree<'_> {
+    /// A page title under the site's name.
+    fn title(&self, page: &str) -> String {
+        format!("{page} · {}", self.site.title)
+    }
 }
 
 struct Page<'a> {
     site: &'a Site,
     tree: &'a Tree<'a>,
-    theme: &'static Theme,
+    theme: &'a Theme,
     path: &'a str,
     file: &'a str,
     filetype: &'a str,
@@ -77,7 +72,7 @@ fn layout(page: Page<'_>, lines: Vec<Markup>) -> Markup {
                 meta name="twitter:card" content="summary";
                 link rel="icon" href=(format!("/favicon.svg?t={}", page.theme.slug)) type="image/svg+xml";
                 link rel="stylesheet" href=(format!("/style.css?v={}", hldr_core::VERSION));
-                style { (PreEscaped(page.theme.root_css())) }
+                style { (PreEscaped(theme::root_css(page.theme))) }
                 @if let Some(json_ld) = &page.json_ld {
                     script type="application/ld+json" { (PreEscaped(json_ld)) }
                 }
@@ -126,7 +121,7 @@ fn tree(tree: &Tree<'_>, current: &str) -> Markup {
     let open_projects = in_projects || tree.projects.len() <= TREE_OPEN_MAX;
     html! {
         details.sec data-fold="files" open {
-            summary.hd { "hvpaiva.dev" }
+            summary.hd { (tree.site.title) }
             (tree_file("/", "README.md", current))
             (tree_file("/about", "about.md", current))
             (tree_file("/profile", "profile.yaml", current))
@@ -146,7 +141,7 @@ fn tree(tree: &Tree<'_>, current: &str) -> Markup {
                     }
                 }
             }
-            @if tree.blog_enabled {
+            @if tree.site.blog_enabled {
                 (tree_file("/blog", "blog/", current))
             } @else {
                 div.row.dir.off { span.ic { "▸" } span.grow { "blog/" } span.badge.off { "off" } }
@@ -161,9 +156,15 @@ fn tree(tree: &Tree<'_>, current: &str) -> Markup {
         }
         details.sec data-fold="elsewhere" open {
             summary.hd { "elsewhere" }
-            div.row { span.ic { "↗" } a href="https://github.com/hvpaiva" rel="me" { "github" } }
-            div.row { span.ic { "↗" } a href="https://linkedin.com/in/hvpaiva" rel="me" { "linkedin" } }
-            div.row { span.ic { "@" } a href="mailto:contact@hvpaiva.dev" { "mail" } }
+            @if let Some(url) = tree.profile.links.github.as_deref().and_then(source::safe_url) {
+                div.row { span.ic { "↗" } a href=(url) rel="me" { "github" } }
+            }
+            @if let Some(url) = tree.profile.links.linkedin.as_deref().and_then(source::safe_url) {
+                div.row { span.ic { "↗" } a href=(url) rel="me" { "linkedin" } }
+            }
+            @if let Some(email) = &tree.profile.email {
+                div.row { span.ic { "@" } a href=(format!("mailto:{email}")) { "mail" } }
+            }
         }
     }
 }
@@ -199,18 +200,21 @@ pub fn home(
     tree: &Tree<'_>,
     profile: &Profile,
     highlighted: &[ProjectSummary],
-    theme: &'static Theme,
+    theme: &Theme,
 ) -> Markup {
-    let mut lines = vec![
-        html! { pre.ban role="img" aria-label="HLDR" { (ASCII_BANNER) } },
-        html! { p {} },
+    let mut lines = Vec::new();
+    if let Some(banner) = &tree.site.banner {
+        lines.push(html! { pre.ban role="img" aria-label=(banner.alt) { (banner.art) } });
+        lines.push(html! { p {} });
+    }
+    lines.extend([
         html! { h1.h1 { span.mk { "# " } (profile.name) } },
         html! { p.q { span.mk { "> " } (profile.headline) } },
         html! { p {} },
         html! { p { (profile.bio.trim()) } },
         html! { p {} },
         html! { h2.h2 { span.mk { "## " } a href="/projects" { "Projects" } } },
-    ];
+    ]);
     let shown = highlighted.get(..3).unwrap_or(highlighted);
     lines.extend(project_rows(shown));
     if tree.projects.len() > shown.len() {
@@ -247,7 +251,7 @@ pub fn home(
     )
 }
 
-pub fn about(site: &Site, tree: &Tree<'_>, profile: &Profile, theme: &'static Theme) -> Markup {
+pub fn about(site: &Site, tree: &Tree<'_>, profile: &Profile, theme: &Theme) -> Markup {
     let mut lines = vec![html! { h1.h1 { span.mk { "# " } "about" } }, html! { p {} }];
     lines.extend(source::markdown(
         profile
@@ -266,7 +270,7 @@ pub fn about(site: &Site, tree: &Tree<'_>, profile: &Profile, theme: &'static Th
             path: "/about",
             file: "about.md",
             filetype: "markdown",
-            title: "about · hvpaiva.dev",
+            title: &tree.title("about"),
             description: &profile.headline,
             json_ld: Some(person_ld(site, profile)),
         },
@@ -274,7 +278,7 @@ pub fn about(site: &Site, tree: &Tree<'_>, profile: &Profile, theme: &'static Th
     )
 }
 
-pub fn profile(site: &Site, tree: &Tree<'_>, profile: &Profile, theme: &'static Theme) -> Markup {
+pub fn profile(site: &Site, tree: &Tree<'_>, profile: &Profile, theme: &Theme) -> Markup {
     let mut lines = vec![
         source::yaml_pair(0, "name", source::yaml_str(&profile.name)),
         source::yaml_pair(0, "headline", source::yaml_str(&profile.headline)),
@@ -317,7 +321,7 @@ pub fn profile(site: &Site, tree: &Tree<'_>, profile: &Profile, theme: &'static 
             path: "/profile",
             file: "profile.yaml",
             filetype: "yaml",
-            title: "profile · hvpaiva.dev",
+            title: &tree.title("profile"),
             description: &profile.headline,
             json_ld: None,
         },
@@ -325,12 +329,8 @@ pub fn profile(site: &Site, tree: &Tree<'_>, profile: &Profile, theme: &'static 
     )
 }
 
-pub fn projects_index(
-    site: &Site,
-    tree: &Tree<'_>,
-    description: &str,
-    theme: &'static Theme,
-) -> Markup {
+pub fn projects_index(site: &Site, tree: &Tree<'_>, theme: &Theme) -> Markup {
+    let description = tree.site.descriptions.projects.as_str();
     let count = tree.projects.len();
     let mut lines = vec![
         html! { p.c { "\" projects/: " (count) " indexed, ordered by highlight" } },
@@ -354,7 +354,7 @@ pub fn projects_index(
             path: "/projects",
             file: "projects/",
             filetype: "netrw",
-            title: "projects · hvpaiva.dev",
+            title: &tree.title("projects"),
             description,
             json_ld: None,
         },
@@ -362,15 +362,10 @@ pub fn projects_index(
     )
 }
 
-pub fn project_page(
-    site: &Site,
-    tree: &Tree<'_>,
-    project: &Project,
-    theme: &'static Theme,
-) -> Markup {
+pub fn project_page(site: &Site, tree: &Tree<'_>, project: &Project, theme: &Theme) -> Markup {
     let path = format!("/projects/{}", project.slug);
     let file = format!("projects/{}.md", project.slug);
-    let title = format!("{} · hvpaiva.dev", project.title);
+    let title = tree.title(&project.title);
     let mut lines = vec![
         html! { p.mk { "---" } },
         source::yaml_pair(0, "title", source::yaml_str(&project.title)),
@@ -438,27 +433,27 @@ pub fn project_page(
 
 /// `:colorscheme` as a page. Each line is a link that sets the cookie;
 /// its palette rides along as custom properties for the live preview.
-pub fn themes_index(site: &Site, tree: &Tree<'_>, theme: &'static Theme) -> Markup {
+pub fn themes_index(site: &Site, tree: &Tree<'_>, themes: &[Theme], theme: &Theme) -> Markup {
     let mut lines = vec![
-        html! { p.c { "\" :colorscheme: " (THEMES.len()) " Omarchy palettes, * is yours" } },
+        html! { p.c { "\" :colorscheme: " (themes.len()) " palettes, * is yours" } },
         html! { p.c { "\" j k previews · Enter or click keeps it · leaving without Enter reverts" } },
         html! { p {} },
     ];
-    for candidate in THEMES {
+    for candidate in themes {
         let mark = if candidate.slug == theme.slug {
             "* "
         } else {
             "  "
         };
         lines.push(html! {
-            p data-theme=(candidate.slug) style=(candidate.vars()) {
+            p data-theme=(candidate.slug) style=(theme::vars(candidate)) {
                 span.mk { (mark) }
                 span.sw aria-hidden="true" { i {} i {} i {} i {} i {} }
                 "  "
-                a href=(format!("/theme/{}", candidate.slug)) { (candidate.name) }
-                (pad(candidate.name, 18))
+                a href=(format!("/theme/{}", candidate.slug)) { (candidate.title) }
+                (pad(&candidate.title, 18))
                 span.mk {
-                    (candidate.slug) (pad(candidate.slug, 18))
+                    (candidate.slug) (pad(&candidate.slug, 18))
                     @if candidate.dark { "dark" } @else { "light" }
                 }
             }
@@ -472,15 +467,15 @@ pub fn themes_index(site: &Site, tree: &Tree<'_>, theme: &'static Theme) -> Mark
             path: "/theme",
             file: "[colorscheme]",
             filetype: "colors",
-            title: "theme · hvpaiva.dev",
-            description: "Pick a palette. Omarchy themes, applied to this page.",
+            title: &tree.title("theme"),
+            description: &tree.site.descriptions.themes,
             json_ld: None,
         },
         lines,
     )
 }
 
-pub fn help(site: &Site, tree: &Tree<'_>, theme: &'static Theme) -> Markup {
+pub fn help(site: &Site, tree: &Tree<'_>, theme: &Theme) -> Markup {
     let section = |title: &str, tag: &str| {
         vec![
             html! { p.mk { ("=".repeat(78)) } },
@@ -491,9 +486,9 @@ pub fn help(site: &Site, tree: &Tree<'_>, theme: &'static Theme) -> Markup {
     let key =
         |keys: &str, text: Markup| html! { p { "  " span.n { (keys) } (pad(keys, 16)) (text) } };
     let lines: Vec<Markup> = [vec![
-        html! { p { span.tag { "*hvpaiva.txt*" } "   For hldr " (hldr_core::VERSION) "              Last change: 2026 Sep 21" } },
+        html! { p { span.tag { "*hvpaiva.txt*" } "   For hldr " (hldr_core::VERSION) } },
         html! { p {} },
-        html! { h1.h1 { "                    HVPAIVA.DEV · THE MANUAL" } },
+        html! { h1.h1 { "                    " (tree.site.title.to_uppercase()) " · THE MANUAL" } },
         html! { p {} },
         html! { p { "You do not need any of this. Everything here is a link: the tree on the left, the tabs on top, the words in the files. Click. The keys below are for people who already speak vim." } },
         html! { p {} },
@@ -555,21 +550,18 @@ pub fn help(site: &Site, tree: &Tree<'_>, theme: &'static Theme) -> Markup {
             path: "/help",
             file: "help.txt",
             filetype: "help",
-            title: "help · hvpaiva.dev",
-            description: "Keys and commands for hvpaiva.dev. None of them are required.",
+            title: &tree.title("help"),
+            description: &format!(
+                "Keys and commands for {}. None of them are required.",
+                tree.site.title
+            ),
             json_ld: None,
         },
         lines,
     )
 }
 
-pub fn not_found(
-    site: &Site,
-    tree: &Tree<'_>,
-    path: &str,
-    detail: &str,
-    theme: &'static Theme,
-) -> Markup {
+pub fn not_found(site: &Site, tree: &Tree<'_>, path: &str, detail: &str, theme: &Theme) -> Markup {
     let file = path.trim_start_matches('/');
     let lines = vec![
         html! { p.err { "E447: Can't find file \"" (file) "\" in path" } },
@@ -587,7 +579,7 @@ pub fn not_found(
             path,
             file: if file.is_empty() { "[No Name]" } else { file },
             filetype: "",
-            title: "404 · hvpaiva.dev",
+            title: &tree.title("404"),
             description: detail,
             json_ld: None,
         },

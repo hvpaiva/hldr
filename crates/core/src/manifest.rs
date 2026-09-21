@@ -11,8 +11,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
-use crate::api::{BlogSpec, ProfileSpec, ProjectSpec, SiteSpec};
-use crate::types::{AssetSpec, ProfileLinks, ProjectLinks, ProjectStatus};
+use crate::api::{
+    BannerSpec, BlogSpec, DescriptionsSpec, ProfileSpec, ProjectSpec, SiteSpec, ThemeSpec,
+};
+use crate::types::{AssetSpec, Palette, ProfileLinks, ProjectLinks, ProjectStatus};
 
 /// A resource type backed by a content file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +22,7 @@ pub enum Kind {
     Project,
     Profile,
     Site,
+    Theme,
 }
 
 /// How a content file is written.
@@ -38,6 +41,7 @@ impl Kind {
             Self::Project => "Project",
             Self::Profile => "Profile",
             Self::Site => "Site",
+            Self::Theme => "Theme",
         }
     }
 
@@ -47,19 +51,20 @@ impl Kind {
             Self::Project => "projects/{name}.md",
             Self::Profile => "profile.md",
             Self::Site => "site.yaml",
+            Self::Theme => "themes/{name}.yaml",
         }
     }
 
     pub fn format(self) -> Format {
         match self {
             Self::Project | Self::Profile => Format::Markdown,
-            Self::Site => Format::Yaml,
+            Self::Site | Self::Theme => Format::Yaml,
         }
     }
 
     /// Exactly one resource of this kind exists, and it has no name.
     pub fn is_singleton(self) -> bool {
-        !matches!(self, Self::Project)
+        matches!(self, Self::Profile | Self::Site)
     }
 }
 
@@ -105,6 +110,13 @@ pub fn locate(path: &Path) -> Result<Option<Location>, Error> {
             },
             None => return Ok(None),
         },
+        ["themes", file] => match file.strip_suffix(".yaml") {
+            Some(name) => Location {
+                kind: Kind::Theme,
+                name: Some(validate_name(path, name)?.to_owned()),
+            },
+            None => return Ok(None),
+        },
         _ => return Ok(None),
     };
     Ok(Some(location))
@@ -137,6 +149,7 @@ pub enum Manifest {
     Project { name: String, spec: ProjectSpec },
     Profile(ProfileSpec),
     Site(SiteSpec),
+    Theme { name: String, spec: ThemeSpec },
 }
 
 impl Manifest {
@@ -145,13 +158,14 @@ impl Manifest {
             Self::Project { .. } => Kind::Project,
             Self::Profile(_) => Kind::Profile,
             Self::Site(_) => Kind::Site,
+            Self::Theme { .. } => Kind::Theme,
         }
     }
 
     /// Path of the file under the content root.
     pub fn path(&self) -> String {
         match self {
-            Self::Project { name, .. } => path(Kind::Project, Some(name)),
+            Self::Project { name, .. } | Self::Theme { name, .. } => path(self.kind(), Some(name)),
             other => path(other.kind(), None),
         }
     }
@@ -195,7 +209,21 @@ struct ProfileFile {
 #[serde(deny_unknown_fields)]
 struct SiteFile {
     kind: String,
+    title: String,
+    theme: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    banner: Option<BannerSpec>,
+    descriptions: DescriptionsSpec,
     blog: BlogSpec,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ThemeFile {
+    kind: String,
+    title: String,
+    dark: bool,
+    colors: Palette,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -242,9 +270,31 @@ pub fn parse(path: &Path, source: &[u8]) -> Result<Manifest, Error> {
         (Kind::Site, _) => {
             let file: SiteFile = from_yaml(path, text)?;
             expect_kind(path, &file.kind, Kind::Site)?;
-            Ok(Manifest::Site(SiteSpec { blog: file.blog }))
+            validate_name(path, &file.theme)?;
+            Ok(Manifest::Site(SiteSpec {
+                title: file.title,
+                theme: file.theme,
+                banner: file.banner,
+                descriptions: file.descriptions,
+                blog: file.blog,
+            }))
         }
-        (Kind::Project, None) => Err(Error::file(path, "project without a name")),
+        (Kind::Theme, Some(name)) => {
+            let file: ThemeFile = from_yaml(path, text)?;
+            expect_kind(path, &file.kind, Kind::Theme)?;
+            Ok(Manifest::Theme {
+                name,
+                spec: ThemeSpec {
+                    title: file.title,
+                    dark: file.dark,
+                    colors: file.colors,
+                },
+            })
+        }
+        (kind @ (Kind::Project | Kind::Theme), None) => Err(Error::file(
+            path,
+            format!("{} without a name", kind.as_str()),
+        )),
     }
 }
 
@@ -280,7 +330,17 @@ pub fn render(manifest: &Manifest) -> Result<String, Error> {
         }
         Manifest::Site(spec) => to_yaml(&SiteFile {
             kind,
+            title: spec.title.clone(),
+            theme: spec.theme.clone(),
+            banner: spec.banner.clone(),
+            descriptions: spec.descriptions.clone(),
             blog: spec.blog.clone(),
+        }),
+        Manifest::Theme { spec, .. } => to_yaml(&ThemeFile {
+            kind,
+            title: spec.title.clone(),
+            dark: spec.dark,
+            colors: spec.colors.clone(),
         }),
     }
 }
@@ -328,6 +388,7 @@ fn split_frontmatter<'a>(path: &Path, source: &'a str) -> Result<(&'a str, &'a s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{SITE, THEME};
 
     const PROJECT: &str = "\
 ---
@@ -370,6 +431,10 @@ Design to platform.
         let at = |p: &str| locate(Path::new(p)).unwrap();
         assert_eq!(at("site.yaml").unwrap().kind, Kind::Site);
         assert_eq!(at("profile.md").unwrap().kind, Kind::Profile);
+        let theme = at("themes/nord.yaml").unwrap();
+        assert_eq!(theme.kind, Kind::Theme);
+        assert_eq!(theme.name.as_deref(), Some("nord"));
+        assert!(at("themes/nord.yml").is_none());
         let project = at("projects/atlas.md").unwrap();
         assert_eq!(project.kind, Kind::Project);
         assert_eq!(project.name.as_deref(), Some("atlas"));
@@ -386,6 +451,7 @@ Design to platform.
             (Kind::Project, Some("atlas")),
             (Kind::Profile, None),
             (Kind::Site, None),
+            (Kind::Theme, Some("nord")),
         ] {
             let located = locate(Path::new(&path(kind, name))).unwrap().unwrap();
             assert_eq!(located.kind, kind);
@@ -439,12 +505,48 @@ Design to platform.
     #[test]
     fn site_round_trips() {
         let path = Path::new("site.yaml");
-        let first = parse(path, b"kind: Site\nblog:\n  enabled: true\n").unwrap();
+        let first = parse(path, SITE.as_bytes()).unwrap();
         let rendered = render(&first).unwrap();
         let Manifest::Site(spec) = parse(path, rendered.as_bytes()).unwrap() else {
             panic!("not a site: {rendered}");
         };
-        assert!(spec.blog.enabled);
+        assert!(!spec.blog.enabled);
+        assert_eq!(spec.theme, "nord");
+        let banner = spec.banner.unwrap();
+        assert_eq!(banner.art, "##\n #");
+        assert_eq!(banner.alt, "EX");
+        assert_eq!(spec.descriptions.themes, "Palettes.");
+    }
+
+    #[test]
+    fn theme_round_trips() {
+        let path = Path::new("themes/nord.yaml");
+        let first = parse(path, THEME.as_bytes()).unwrap();
+        let rendered = render(&first).unwrap();
+        let Manifest::Theme { name, spec } = parse(path, rendered.as_bytes()).unwrap() else {
+            panic!("not a theme: {rendered}");
+        };
+        assert_eq!(name, "nord");
+        assert_eq!(spec.title, "Nord");
+        assert_eq!(spec.colors.bg.as_str(), "#2e3440");
+    }
+
+    #[test]
+    fn rejects_colors_that_are_not_hex() {
+        let path = Path::new("themes/nord.yaml");
+        let hostile = THEME.replace("\"#88c0d0\"", "\"red;}</style><script>\"");
+        let err = parse(path, hostile.as_bytes()).unwrap_err();
+        assert!(err.to_string().contains("#rrggbb"), "{err}");
+    }
+
+    #[test]
+    fn site_theme_must_be_a_name() {
+        let err = parse(
+            Path::new("site.yaml"),
+            SITE.replace("theme: nord", "theme: ../x").as_bytes(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("name must match"), "{err}");
     }
 
     #[test]

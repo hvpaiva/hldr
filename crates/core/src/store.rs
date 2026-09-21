@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use serde::Serialize;
 use sqlx::FromRow;
 
-use crate::types::{AssetSpec, ProfileLinks, ProjectLinks, ProjectStatus};
+use crate::api::{BannerSpec, DescriptionsSpec};
+use crate::types::{AssetSpec, Palette, ProfileLinks, ProjectLinks, ProjectStatus};
 use crate::{Db, Error};
 
 // Highlights first, in their order, then the most recently changed.
@@ -66,8 +67,41 @@ pub struct Project {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SiteConfig {
+    pub title: String,
+    /// Name of the default theme.
+    pub theme: String,
+    pub banner: Option<BannerSpec>,
+    pub descriptions: DescriptionsSpec,
     pub blog_enabled: bool,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Theme {
+    pub slug: String,
+    pub title: String,
+    pub dark: bool,
+    pub colors: Palette,
+    pub updated_at: String,
+}
+
+#[derive(FromRow)]
+struct SiteRow {
+    title: String,
+    theme: String,
+    banner: Option<String>,
+    descriptions: String,
+    blog_enabled: bool,
+    updated_at: String,
+}
+
+#[derive(FromRow)]
+struct ThemeRow {
+    slug: String,
+    title: String,
+    dark: bool,
+    colors: String,
+    updated_at: String,
 }
 
 /// Which content revision the database materializes.
@@ -123,15 +157,53 @@ impl Db {
     }
 
     pub async fn site_config(&self) -> Result<SiteConfig, Error> {
-        let row: Option<(String, String)> =
-            sqlx::query_as("SELECT value, updated_at FROM config WHERE key = 'blog.enabled'")
-                .fetch_optional(self.pool())
-                .await?;
-        let (value, updated_at) = row.ok_or(Error::Invariant("config blog.enabled missing"))?;
-        Ok(SiteConfig {
-            blog_enabled: matches!(value.as_str(), "true" | "1"),
-            updated_at,
+        self.site().await?.ok_or(Error::Invariant("site missing"))
+    }
+
+    /// The site configuration; `None` until content with a `site.yaml` has
+    /// been synced.
+    pub async fn site(&self) -> Result<Option<SiteConfig>, Error> {
+        let row: Option<SiteRow> = sqlx::query_as(
+            "SELECT title, theme, banner, descriptions, blog_enabled, updated_at
+             FROM site WHERE id = 1",
+        )
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| {
+            Ok(SiteConfig {
+                title: row.title,
+                theme: row.theme,
+                banner: row
+                    .banner
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()?,
+                descriptions: serde_json::from_str(&row.descriptions)?,
+                blog_enabled: row.blog_enabled,
+                updated_at: row.updated_at,
+            })
         })
+        .transpose()
+    }
+
+    pub async fn theme(&self, slug: &str) -> Result<Option<Theme>, Error> {
+        let row: Option<ThemeRow> = sqlx::query_as(
+            "SELECT slug, title, dark, colors, updated_at FROM themes WHERE slug = ?1",
+        )
+        .bind(slug)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(theme_from_row).transpose()
+    }
+
+    /// Every theme, by name.
+    pub async fn themes(&self) -> Result<Vec<Theme>, Error> {
+        let rows: Vec<ThemeRow> = sqlx::query_as(
+            "SELECT slug, title, dark, colors, updated_at FROM themes ORDER BY slug",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        rows.into_iter().map(theme_from_row).collect()
     }
 
     pub async fn profile(&self) -> Result<Profile, Error> {
@@ -295,6 +367,16 @@ impl Db {
     }
 }
 
+fn theme_from_row(row: ThemeRow) -> Result<Theme, Error> {
+    Ok(Theme {
+        slug: row.slug,
+        title: row.title,
+        dark: row.dark,
+        colors: serde_json::from_str(&row.colors)?,
+        updated_at: row.updated_at,
+    })
+}
+
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
@@ -340,8 +422,6 @@ mod tests {
     use crate::index;
     use std::fs;
 
-    const SITE: &str = "kind: Site\nblog:\n  enabled: false\n";
-
     const PROFILE: &str = "\
 ---
 kind: Profile
@@ -374,7 +454,7 @@ Body.
 
     async fn seeded() -> (tempfile::TempDir, Db) {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("site.yaml"), SITE).unwrap();
+        crate::testing::write_site(dir.path());
         fs::write(dir.path().join("profile.md"), PROFILE).unwrap();
         fs::create_dir(dir.path().join("projects")).unwrap();
         fs::write(dir.path().join("projects/atlas.md"), PROJECT).unwrap();

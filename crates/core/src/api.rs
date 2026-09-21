@@ -8,7 +8,7 @@ use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::{Format, Kind};
-use crate::types::{AssetSpec, ProfileLinks, ProjectLinks, ProjectStatus};
+use crate::types::{AssetSpec, Palette, ProfileLinks, ProjectLinks, ProjectStatus};
 
 /// A resource as the API serves it.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -39,6 +39,9 @@ pub type Profile = Resource<ProfileMetadata, ProfileSpec>;
 
 /// Site configuration as the API serves it.
 pub type Site = Resource<SiteMetadata, SiteSpec>;
+
+/// Color scheme as the API serves it.
+pub type Theme = Resource<ThemeMetadata, ThemeSpec>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProjectMetadata {
@@ -102,7 +105,34 @@ pub struct SiteMetadata {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SiteSpec {
+    /// Site name, shown atop the file tree and after every page title.
+    pub title: String,
+    /// Theme a visitor sees before picking one; the name of a `Theme`.
+    pub theme: String,
+    /// ASCII art atop the home page; none when absent.
+    pub banner: Option<BannerSpec>,
+    pub descriptions: DescriptionsSpec,
     pub blog: BlogSpec,
+}
+
+/// ASCII art and what it reads as.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BannerSpec {
+    /// The art, kept verbatim.
+    pub art: String,
+    /// What a screen reader announces instead of the art.
+    pub alt: String,
+}
+
+/// Lines that introduce the listing pages, also used as their meta description.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DescriptionsSpec {
+    /// The projects index.
+    pub projects: String,
+    /// The color scheme picker.
+    pub themes: String,
 }
 
 /// The blog section of the site.
@@ -146,6 +176,24 @@ impl SyncStatus {
             report,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThemeMetadata {
+    /// Identifier, taken from the file name under `themes/`; the value the
+    /// theme cookie and `/theme/{name}` carry.
+    pub name: String,
+    /// When the theme's file last changed, ISO-8601 UTC.
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThemeSpec {
+    /// Display name in the picker.
+    pub title: String,
+    /// Whether the palette is dark; sets the page's `color-scheme`.
+    pub dark: bool,
+    pub colors: Palette,
 }
 
 /// Error body, RFC 9457 (`application/problem+json`).
@@ -235,7 +283,22 @@ pub fn resources() -> List<ApiResource> {
                 "site",
                 &[],
                 &[
+                    ("TITLE", ".spec.title", false),
+                    ("THEME", ".spec.theme", false),
                     ("BLOG", ".spec.blog.enabled", false),
+                    ("UPDATED", ".metadata.updated_at", true),
+                ],
+            ),
+            entry(
+                Kind::Theme,
+                "themes",
+                &["th"],
+                &[
+                    ("NAME", ".metadata.name", false),
+                    ("TITLE", ".spec.title", false),
+                    ("DARK", ".spec.dark", false),
+                    ("BG", ".spec.colors.bg", true),
+                    ("ACCENT", ".spec.colors.accent", true),
                     ("UPDATED", ".metadata.updated_at", true),
                 ],
             ),
@@ -283,6 +346,7 @@ pub fn schemas() -> serde_json::Map<String, serde_json::Value> {
     out.insert("Project".to_owned(), titled::<Project>("Project"));
     out.insert("Profile".to_owned(), titled::<Profile>("Profile"));
     out.insert("Site".to_owned(), titled::<Site>("Site"));
+    out.insert("Theme".to_owned(), titled::<Theme>("Theme"));
     out
 }
 
@@ -346,12 +410,42 @@ impl From<&crate::SiteConfig> for Site {
                 updated_at: item.updated_at.clone(),
             },
             spec: SiteSpec {
+                title: item.title.clone(),
+                theme: item.theme.clone(),
+                banner: item.banner.clone(),
+                descriptions: item.descriptions.clone(),
                 blog: BlogSpec {
                     enabled: item.blog_enabled,
                 },
             },
             status: empty_status(),
         }
+    }
+}
+
+impl From<&crate::Theme> for Theme {
+    fn from(item: &crate::Theme) -> Self {
+        Resource {
+            kind: Kind::Theme.as_str().to_owned(),
+            metadata: ThemeMetadata {
+                name: item.slug.clone(),
+                updated_at: item.updated_at.clone(),
+            },
+            spec: ThemeSpec {
+                title: item.title.clone(),
+                dark: item.dark,
+                colors: item.colors.clone(),
+            },
+            status: empty_status(),
+        }
+    }
+}
+
+/// Themes as a `ThemeList`.
+pub fn theme_list(items: &[crate::Theme]) -> List<Theme> {
+    List {
+        kind: "ThemeList".to_owned(),
+        items: items.iter().map(Theme::from).collect(),
     }
 }
 

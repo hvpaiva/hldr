@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 
 use crate::Error;
-use crate::api::{ProfileSpec, ProjectSpec, SiteSpec};
+use crate::api::{ProfileSpec, ProjectSpec, SiteSpec, ThemeSpec};
 use crate::manifest::{self, Kind, Manifest};
 use crate::markdown::Markdown;
 
@@ -25,6 +25,12 @@ pub struct SyncReport {
     pub projects_skipped: u32,
     /// Projects whose files are gone.
     pub projects_deleted: u32,
+    /// Themes created or rewritten.
+    pub themes_upserted: u32,
+    /// Themes whose files did not change.
+    pub themes_skipped: u32,
+    /// Themes whose files are gone.
+    pub themes_deleted: u32,
 }
 
 type Tx<'a> = sqlx::Transaction<'a, sqlx::Sqlite>;
@@ -44,7 +50,10 @@ pub async fn sync(pool: &SqlitePool, content_dir: &Path) -> Result<SyncReport, E
         ..SyncReport::default()
     };
     let seen = sync_projects(&mut tx, content_dir, &markdown, &mut report).await?;
-    report.projects_deleted = delete_missing(&mut tx, &seen).await?;
+    report.projects_deleted = delete_missing(&mut tx, Kind::Project, &seen).await?;
+    let seen = sync_themes(&mut tx, content_dir, &mut report).await?;
+    report.themes_deleted = delete_missing(&mut tx, Kind::Theme, &seen).await?;
+    check_default_theme(&mut tx).await?;
 
     tx.commit().await?;
     Ok(report)
@@ -55,24 +64,154 @@ fn read(content_dir: &Path, rel: &Path) -> Result<Vec<u8>, Error> {
     fs::read(content_dir.join(rel)).map_err(|err| Error::file(rel, err.to_string()))
 }
 
+/// Files of one named kind, relative to the content root, in name order.
+fn listed(content_dir: &Path, kind: Kind) -> Result<Vec<PathBuf>, Error> {
+    let (dir, file) = kind
+        .path_template()
+        .split_once('/')
+        .ok_or(Error::Invariant("named kinds live in a directory"))?;
+    let extension = file.rsplit_once('.').map_or("", |(_, ext)| ext);
+    let full = content_dir.join(dir);
+    if !full.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entries: Vec<PathBuf> = fs::read_dir(&full)?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == extension))
+        .filter_map(|path| path.file_name().map(|name| Path::new(dir).join(name)))
+        .collect();
+    entries.sort();
+    Ok(entries)
+}
+
+/// Name a file under a kind's directory holds, registered in `seen`.
+fn claim(rel: &Path, seen: &mut HashSet<String>) -> Result<String, Error> {
+    let name = manifest::locate(rel)?
+        .and_then(|location| location.name)
+        .ok_or_else(|| Error::file(rel, "not a named resource"))?;
+    if !seen.insert(name.clone()) {
+        return Err(Error::file(rel, "duplicate name"));
+    }
+    Ok(name)
+}
+
 async fn sync_site(tx: &mut Tx<'_>, content_dir: &Path) -> Result<bool, Error> {
     let rel = PathBuf::from(manifest::path(Kind::Site, None));
-    let Manifest::Site(SiteSpec { blog }) = manifest::parse(&rel, &read(content_dir, &rel)?)?
+    let bytes = read(content_dir, &rel)?;
+    let source_hash = hash(&bytes);
+    let existing: Option<String> = sqlx::query_scalar("SELECT source_hash FROM site WHERE id = 1")
+        .fetch_optional(&mut **tx)
+        .await?;
+    if existing.as_deref() == Some(source_hash.as_str()) {
+        return Ok(false);
+    }
+
+    let Manifest::Site(SiteSpec {
+        title,
+        theme,
+        banner,
+        descriptions,
+        blog,
+    }) = manifest::parse(&rel, &bytes)?
     else {
         return Err(Error::file(&rel, "not a site manifest"));
     };
-    let result = sqlx::query(
-        "INSERT INTO config (key, value, updated_at) VALUES ('blog.enabled', ?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET
-            value = excluded.value,
-            updated_at = excluded.updated_at
-         WHERE config.value <> excluded.value",
+    sqlx::query(
+        "INSERT INTO site (
+            id, title, theme, banner, descriptions, blog_enabled, source_hash, updated_at
+        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ON CONFLICT(id) DO UPDATE SET
+            title = excluded.title,
+            theme = excluded.theme,
+            banner = excluded.banner,
+            descriptions = excluded.descriptions,
+            blog_enabled = excluded.blog_enabled,
+            source_hash = excluded.source_hash,
+            updated_at = excluded.updated_at",
     )
-    .bind(blog.enabled.to_string())
+    .bind(&title)
+    .bind(&theme)
+    .bind(banner.as_ref().map(serde_json::to_string).transpose()?)
+    .bind(serde_json::to_string(&descriptions)?)
+    .bind(blog.enabled)
+    .bind(&source_hash)
     .bind(now_rfc3339())
     .execute(&mut **tx)
     .await?;
-    Ok(result.rows_affected() > 0)
+    Ok(true)
+}
+
+/// Checked on every sync, not only when `site.yaml` changes: removing the
+/// default theme's file must fail as well.
+async fn check_default_theme(tx: &mut Tx<'_>) -> Result<(), Error> {
+    let (theme, exists): (String, bool) = sqlx::query_as(
+        "SELECT theme, EXISTS (SELECT 1 FROM themes WHERE slug = site.theme)
+         FROM site WHERE id = 1",
+    )
+    .fetch_one(&mut **tx)
+    .await?;
+    if exists {
+        Ok(())
+    } else {
+        Err(Error::file(
+            manifest::path(Kind::Site, None),
+            format!("theme {theme} has no themes/{theme}.yaml"),
+        ))
+    }
+}
+
+async fn sync_themes(
+    tx: &mut Tx<'_>,
+    content_dir: &Path,
+    report: &mut SyncReport,
+) -> Result<HashSet<String>, Error> {
+    let mut seen = HashSet::new();
+    for rel in listed(content_dir, Kind::Theme)? {
+        let slug = claim(&rel, &mut seen)?;
+        let bytes = read(content_dir, &rel)?;
+        let source_hash = hash(&bytes);
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT source_hash FROM themes WHERE slug = ?1")
+                .bind(&slug)
+                .fetch_optional(&mut **tx)
+                .await?;
+        if existing.as_deref() == Some(source_hash.as_str()) {
+            report.themes_skipped += 1;
+            continue;
+        }
+        let Manifest::Theme {
+            spec:
+                ThemeSpec {
+                    title,
+                    dark,
+                    colors,
+                },
+            ..
+        } = manifest::parse(&rel, &bytes)?
+        else {
+            return Err(Error::file(&rel, "not a theme"));
+        };
+        sqlx::query(
+            "INSERT INTO themes (slug, title, dark, colors, source_hash, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(slug) DO UPDATE SET
+                title = excluded.title,
+                dark = excluded.dark,
+                colors = excluded.colors,
+                source_hash = excluded.source_hash,
+                updated_at = excluded.updated_at",
+        )
+        .bind(&slug)
+        .bind(&title)
+        .bind(dark)
+        .bind(serde_json::to_string(&colors)?)
+        .bind(&source_hash)
+        .bind(now_rfc3339())
+        .execute(&mut **tx)
+        .await?;
+        report.themes_upserted += 1;
+    }
+    Ok(seen)
 }
 
 async fn sync_profile(
@@ -146,22 +285,7 @@ async fn sync_projects(
     report: &mut SyncReport,
 ) -> Result<HashSet<String>, Error> {
     let mut seen = HashSet::new();
-    let projects_dir = content_dir.join("projects");
-    if !projects_dir.exists() {
-        return Ok(seen);
-    }
-
-    let mut entries: Vec<PathBuf> = fs::read_dir(&projects_dir)?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
-        .filter_map(|path| {
-            path.file_name()
-                .map(|name| Path::new("projects").join(name))
-        })
-        .collect();
-    entries.sort();
-
-    for rel in entries {
+    for rel in listed(content_dir, Kind::Project)? {
         if upsert_project(tx, content_dir, &rel, markdown, &mut seen).await? {
             report.projects_upserted += 1;
         } else {
@@ -179,12 +303,7 @@ async fn upsert_project(
     markdown: &Markdown,
     seen: &mut HashSet<String>,
 ) -> Result<bool, Error> {
-    let slug = manifest::locate(rel)?
-        .and_then(|location| location.name)
-        .ok_or_else(|| Error::file(rel, "not a project path"))?;
-    if !seen.insert(slug.clone()) {
-        return Err(Error::file(rel, "duplicate name"));
-    }
+    let slug = claim(rel, seen)?;
 
     let bytes = read(content_dir, rel)?;
     let source_hash = hash(&bytes);
@@ -279,19 +398,24 @@ async fn upsert_project(
     Ok(true)
 }
 
-async fn delete_missing(tx: &mut Tx<'_>, seen: &HashSet<String>) -> Result<u32, Error> {
-    let slugs: Vec<String> = sqlx::query_scalar("SELECT slug FROM projects")
-        .fetch_all(&mut **tx)
-        .await?;
+/// Removes rows of a named kind whose files are gone.
+async fn delete_missing(tx: &mut Tx<'_>, kind: Kind, seen: &HashSet<String>) -> Result<u32, Error> {
+    let (select, delete) = match kind {
+        Kind::Project => (
+            "SELECT slug FROM projects",
+            "DELETE FROM projects WHERE slug = ?1",
+        ),
+        Kind::Theme => (
+            "SELECT slug FROM themes",
+            "DELETE FROM themes WHERE slug = ?1",
+        ),
+        Kind::Profile | Kind::Site => return Err(Error::Invariant("singletons are not pruned")),
+    };
+    let slugs: Vec<String> = sqlx::query_scalar(select).fetch_all(&mut **tx).await?;
     let mut deleted = 0;
-    for slug in slugs {
-        if !seen.contains(&slug) {
-            sqlx::query("DELETE FROM projects WHERE slug = ?1")
-                .bind(&slug)
-                .execute(&mut **tx)
-                .await?;
-            deleted += 1;
-        }
+    for slug in slugs.iter().filter(|slug| !seen.contains(*slug)) {
+        sqlx::query(delete).bind(slug).execute(&mut **tx).await?;
+        deleted += 1;
     }
     Ok(deleted)
 }
@@ -308,8 +432,7 @@ fn now_rfc3339() -> String {
 mod tests {
     use super::*;
     use crate::db::Db;
-
-    const SITE: &str = "kind: Site\nblog:\n  enabled: false\n";
+    use crate::testing::{SITE, THEME};
 
     const PROFILE: &str = "\
 ---
@@ -344,7 +467,7 @@ Context and **decisions**.
 ";
 
     async fn setup(dir: &Path) -> Db {
-        fs::write(dir.join("site.yaml"), SITE).unwrap();
+        crate::testing::write_site(dir);
         fs::write(dir.join("profile.md"), PROFILE).unwrap();
         fs::create_dir(dir.join("projects")).unwrap();
         fs::write(dir.join("projects/atlas.md"), PROJECT).unwrap();
@@ -380,8 +503,12 @@ Context and **decisions**.
         let about = scalar(&db, "SELECT about_source FROM profile").await;
         assert_eq!(about, "Design to platform.\n");
 
-        let enabled = scalar(&db, "SELECT value FROM config WHERE key = 'blog.enabled'").await;
-        assert_eq!(enabled, "false");
+        assert!(!db.blog_enabled().await.unwrap());
+        let site = db.site_config().await.unwrap();
+        assert_eq!(site.title, "example.test");
+        assert_eq!(site.theme, "nord");
+        let theme = db.theme("nord").await.unwrap().unwrap();
+        assert_eq!(theme.colors.bg.as_str(), "#2e3440");
     }
 
     #[tokio::test]
@@ -398,7 +525,7 @@ Context and **decisions**.
     }
 
     #[tokio::test]
-    async fn site_manifest_drives_config() {
+    async fn site_manifest_drives_the_site() {
         let dir = tempfile::tempdir().unwrap();
         let db = setup(dir.path()).await;
         sync(db.pool(), dir.path()).await.unwrap();
@@ -473,5 +600,59 @@ Context and **decisions**.
         fs::remove_file(dir.path().join("site.yaml")).unwrap();
         let err = sync(db.pool(), dir.path()).await.unwrap_err();
         assert!(err.to_string().contains("site.yaml"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn indexes_and_prunes_themes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = setup(dir.path()).await;
+        fs::write(
+            dir.path().join("themes/dawn.yaml"),
+            THEME
+                .replace("title: Nord", "title: Dawn")
+                .replace("dark: true", "dark: false"),
+        )
+        .unwrap();
+        let report = sync(db.pool(), dir.path()).await.unwrap();
+        assert_eq!(report.themes_upserted, 2);
+        let names: Vec<String> = db
+            .themes()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.slug)
+            .collect();
+        assert_eq!(names, ["dawn", "nord"]);
+
+        fs::remove_file(dir.path().join("themes/dawn.yaml")).unwrap();
+        let report = sync(db.pool(), dir.path()).await.unwrap();
+        assert_eq!(report.themes_deleted, 1);
+        assert_eq!(report.themes_skipped, 1);
+        assert!(db.theme("dawn").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn the_default_theme_must_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = setup(dir.path()).await;
+        sync(db.pool(), dir.path()).await.unwrap();
+
+        fs::remove_file(dir.path().join("themes/nord.yaml")).unwrap();
+        let err = sync(db.pool(), dir.path()).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("theme nord has no themes/nord.yaml"),
+            "{err}"
+        );
+        assert!(db.theme("nord").await.unwrap().is_some());
+
+        fs::write(dir.path().join("themes/nord.yaml"), THEME).unwrap();
+        fs::write(
+            dir.path().join("site.yaml"),
+            SITE.replace("theme: nord", "theme: dusk"),
+        )
+        .unwrap();
+        let err = sync(db.pool(), dir.path()).await.unwrap_err();
+        assert!(err.to_string().contains("theme dusk"), "{err}");
     }
 }

@@ -41,6 +41,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects/{slug}", get(project))
         .route("/api/v1/profile", get(profile))
         .route("/api/v1/site", get(site))
+        .route("/api/v1/themes", get(themes))
+        .route("/api/v1/themes/{name}", get(theme))
         .route("/api/v1/sync", get(sync_status).post(sync))
         .route("/api/v1/posts", get(posts))
         .route("/api/v1/posts/{slug}", get(post))
@@ -80,6 +82,21 @@ async fn profile(State(state): State<AppState>) -> Result<Response, ApiError> {
 async fn site(State(state): State<AppState>) -> Result<Response, ApiError> {
     let site = state.db.site_config().await?;
     Ok(Json(api::Site::from(&site)).into_response())
+}
+
+async fn themes(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let items = state.db.themes().await?;
+    Ok(Json(api::theme_list(&items)).into_response())
+}
+
+async fn theme(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Response, ApiError> {
+    let Some(theme) = state.db.theme(&name).await? else {
+        return Ok(not_found(format!("theme '{name}' not found")));
+    };
+    Ok(Json(api::Theme::from(&theme)).into_response())
 }
 
 async fn sync_status(State(state): State<AppState>) -> Result<Response, ApiError> {

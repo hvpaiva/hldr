@@ -260,15 +260,21 @@ async fn healthz() -> Json<Health> {
     Json(Health::ok(None))
 }
 
-/// Ready once the database holds some synced revision of the content.
+/// Ready once this binary has materialized some revision of the content.
+/// A database synced only by an older release has no `site` row yet, so a
+/// deploy that cannot sync keeps the previous container serving.
 async fn readyz(State(state): State<AppState>) -> Response {
     let synced = async {
         state.db.ping().await?;
-        state.db.sync_state().await
+        let sync = state.db.sync_state().await?;
+        let site = state.db.site().await?;
+        Ok::<_, hldr_core::Error>((sync, site.is_some()))
     };
     match synced.await {
-        Ok(sync) if sync.synced_at.is_some() => Json(Health::ok(sync.revision)).into_response(),
-        Ok(_) => unready("content never synced"),
+        Ok((sync, true)) if sync.synced_at.is_some() => {
+            Json(Health::ok(sync.revision)).into_response()
+        }
+        Ok(_) => unready("content not synced by this release"),
         Err(error) => unready(&error.to_string()),
     }
 }
@@ -278,65 +284,79 @@ fn unready(reason: &str) -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, Json(Health::unready(None))).into_response()
 }
 
+/// What every page draws around its buffer, loaded once per request.
+struct Chrome {
+    projects: Vec<hldr_core::ProjectSummary>,
+    site: hldr_core::SiteConfig,
+    profile: hldr_core::Profile,
+    theme: hldr_core::Theme,
+}
+
+impl Chrome {
+    async fn load(state: &AppState, headers: &HeaderMap) -> Result<Self, AppError> {
+        let site = state.db.site_config().await?;
+        let theme = current_theme(&state.db, headers, &site).await?;
+        Ok(Self {
+            projects: state.db.projects().await?,
+            profile: state.db.profile().await?,
+            site,
+            theme,
+        })
+    }
+
+    fn tree(&self) -> html::Tree<'_> {
+        html::Tree {
+            projects: &self.projects,
+            site: &self.site,
+            profile: &self.profile,
+        }
+    }
+}
+
+/// The visitor's pick while that theme still exists, else the site's default.
+async fn current_theme(
+    db: &Db,
+    headers: &HeaderMap,
+    site: &hldr_core::SiteConfig,
+) -> Result<hldr_core::Theme, AppError> {
+    if let Some(slug) = theme::cookie_slug(headers)
+        && let Some(picked) = db.theme(slug).await?
+    {
+        return Ok(picked);
+    }
+    Ok(db
+        .theme(&site.theme)
+        .await?
+        .ok_or(hldr_core::Error::Invariant("default theme missing"))?)
+}
+
 async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    let profile = state.db.profile().await?;
+    let chrome = Chrome::load(&state, &headers).await?;
     let highlighted = state.db.highlighted_projects().await?;
-    let (projects, blog_enabled) = tree_data(&state).await?;
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
     Ok(html::home(
         &state.site,
-        &tree,
-        &profile,
+        &chrome.tree(),
+        &chrome.profile,
         &highlighted,
-        theme::Theme::from_headers(&headers),
+        &chrome.theme,
     )
     .into_response())
 }
 
 async fn projects(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    let (projects, blog_enabled) = tree_data(&state).await?;
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
-    Ok(html::projects_index(
-        &state.site,
-        &tree,
-        "Work worth opening. Context lives on the project page, not the README.",
-        theme::Theme::from_headers(&headers),
-    )
-    .into_response())
+    let chrome = Chrome::load(&state, &headers).await?;
+    Ok(html::projects_index(&state.site, &chrome.tree(), &chrome.theme).into_response())
 }
 
 async fn about(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    let profile = state.db.profile().await?;
-    let (projects, blog_enabled) = tree_data(&state).await?;
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
-    Ok(html::about(
-        &state.site,
-        &tree,
-        &profile,
-        theme::Theme::from_headers(&headers),
-    )
-    .into_response())
+    let chrome = Chrome::load(&state, &headers).await?;
+    Ok(html::about(&state.site, &chrome.tree(), &chrome.profile, &chrome.theme).into_response())
 }
 
 async fn themes(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    let (projects, blog_enabled) = tree_data(&state).await?;
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
-    Ok(
-        html::themes_index(&state.site, &tree, theme::Theme::from_headers(&headers))
-            .into_response(),
-    )
+    let chrome = Chrome::load(&state, &headers).await?;
+    let themes = state.db.themes().await?;
+    Ok(html::themes_index(&state.site, &chrome.tree(), &themes, &chrome.theme).into_response())
 }
 
 async fn project(
@@ -353,18 +373,8 @@ async fn project(
         )
         .await);
     };
-    let (projects, blog_enabled) = tree_data(&state).await?;
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
-    Ok(html::project_page(
-        &state.site,
-        &tree,
-        &project,
-        theme::Theme::from_headers(&headers),
-    )
-    .into_response())
+    let chrome = Chrome::load(&state, &headers).await?;
+    Ok(html::project_page(&state.site, &chrome.tree(), &project, &chrome.theme).into_response())
 }
 
 async fn blog(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
@@ -426,35 +436,16 @@ async fn profile_page(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let profile = state.db.profile().await?;
-    let (projects, blog_enabled) = tree_data(&state).await?;
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
-    Ok(html::profile(
-        &state.site,
-        &tree,
-        &profile,
-        theme::Theme::from_headers(&headers),
-    )
-    .into_response())
+    let chrome = Chrome::load(&state, &headers).await?;
+    Ok(html::profile(&state.site, &chrome.tree(), &chrome.profile, &chrome.theme).into_response())
 }
 
 async fn help_page(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
-    let (projects, blog_enabled) = tree_data(&state).await?;
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
-    Ok(html::help(&state.site, &tree, theme::Theme::from_headers(&headers)).into_response())
-}
-
-async fn tree_data(state: &AppState) -> Result<(Vec<hldr_core::ProjectSummary>, bool), AppError> {
-    Ok((state.db.projects().await?, state.db.blog_enabled().await?))
+    let chrome = Chrome::load(&state, &headers).await?;
+    Ok(html::help(&state.site, &chrome.tree(), &chrome.theme).into_response())
 }
 
 async fn vim_js() -> impl IntoResponse {
@@ -477,19 +468,27 @@ async fn keys_js() -> impl IntoResponse {
     )
 }
 
-async fn favicon(Query(query): Query<FaviconQuery>, headers: HeaderMap) -> impl IntoResponse {
-    let theme = query
-        .t
-        .as_deref()
-        .and_then(theme::Theme::get)
-        .unwrap_or_else(|| theme::Theme::from_headers(&headers));
-    (
+async fn favicon(
+    State(state): State<AppState>,
+    Query(query): Query<FaviconQuery>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let asked = match query.t.as_deref() {
+        Some(slug) => state.db.theme(slug).await?,
+        None => None,
+    };
+    let theme = match asked {
+        Some(theme) => theme,
+        None => current_theme(&state.db, &headers, &state.db.site_config().await?).await?,
+    };
+    Ok((
         [
             (header::CONTENT_TYPE, "image/svg+xml"),
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
-        theme.favicon_svg(),
+        theme::favicon_svg(&theme),
     )
+        .into_response())
 }
 
 #[derive(serde::Deserialize)]
@@ -530,44 +529,37 @@ async fn render_not_found(
     path: &str,
     detail: &str,
 ) -> Response {
-    let projects = state.db.projects().await.unwrap_or_default();
-    let blog_enabled = state.db.blog_enabled().await.unwrap_or(false);
-    let tree = html::Tree {
-        projects: &projects,
-        blog_enabled,
-    };
-    let page = html::not_found(
-        &state.site,
-        &tree,
-        path,
-        detail,
-        theme::Theme::from_headers(headers),
-    );
-    (StatusCode::NOT_FOUND, page).into_response()
+    match Chrome::load(state, headers).await {
+        Ok(chrome) => {
+            let page = html::not_found(&state.site, &chrome.tree(), path, detail, &chrome.theme);
+            (StatusCode::NOT_FOUND, page).into_response()
+        }
+        Err(error) => error.into_response(),
+    }
 }
 
 async fn set_theme(
     State(state): State<AppState>,
     Path(slug): Path<String>,
     headers: HeaderMap,
-) -> Response {
-    let Some(theme) = theme::Theme::get(&slug) else {
-        return render_not_found(
+) -> Result<Response, AppError> {
+    let Some(theme) = state.db.theme(&slug).await? else {
+        return Ok(render_not_found(
             &state,
             &headers,
             &format!("/theme/{slug}"),
             "no such theme.",
         )
-        .await;
+        .await);
     };
-    (
+    Ok((
         StatusCode::SEE_OTHER,
         [
             (header::LOCATION, theme::safe_return(&headers)),
-            (header::SET_COOKIE, theme.cookie_header()),
+            (header::SET_COOKIE, theme::cookie_header(&theme)),
         ],
     )
-        .into_response()
+        .into_response())
 }
 
 async fn terminate() {
@@ -812,6 +804,84 @@ kind: Site
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(content_type, "application/problem+json");
         assert_eq!(body["detail"], "internal error");
+    }
+
+    async fn page(router: Router, path: &str, cookie: Option<&str>) -> (StatusCode, String) {
+        let mut request = Request::get(path);
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, cookie);
+        }
+        let response = router
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    #[tokio::test]
+    async fn pages_take_their_identity_from_content() {
+        let (_dir, state) = state().await;
+        for path in ["/", "/projects", "/about", "/profile", "/theme"] {
+            let (status, body) = page(site_router(state.clone()), path, None).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert!(body.contains("example.test"), "{path}");
+            assert!(!body.contains("hvpaiva"), "{path}");
+            assert!(
+                body.contains("https://github.com/example"),
+                "{path}: elsewhere"
+            );
+        }
+        let (_, home) = page(site_router(state.clone()), "/", None).await;
+        assert!(home.contains("AMPLE"), "banner");
+        let (_, projects) = page(site_router(state.clone()), "/projects", None).await;
+        assert!(projects.contains("Fixture projects."));
+    }
+
+    #[tokio::test]
+    async fn the_theme_cookie_picks_among_content_themes() {
+        let (_dir, state) = state().await;
+        let (_, default) = page(site_router(state.clone()), "/", None).await;
+        assert!(default.contains("--bg:#2e3440"));
+        let (_, picked) = page(site_router(state.clone()), "/", Some("theme=dawn")).await;
+        assert!(picked.contains("--bg:#faf4ed"));
+        assert!(picked.contains("color-scheme:light"));
+        let (_, unknown) = page(site_router(state.clone()), "/", Some("theme=gone")).await;
+        assert!(unknown.contains("--bg:#2e3440"));
+
+        let (_, picker) = page(site_router(state.clone()), "/theme", None).await;
+        assert!(picker.contains("2 palettes"));
+        assert!(picker.contains("/theme/dawn"));
+
+        let response = site_router(state.clone())
+            .oneshot(Request::get("/theme/dawn").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(cookie.starts_with("theme=dawn;"), "{cookie}");
+
+        let (status, _) = page(site_router(state.clone()), "/theme/gone", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn private_api_serves_themes() {
+        let (_dir, state) = state().await;
+        let (status, _, list) = call(api::router(state.clone()), "/api/v1/themes").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list["kind"], "ThemeList");
+        assert_eq!(list["items"][0]["metadata"]["name"], "dawn");
+        let (status, _, nord) = call(api::router(state.clone()), "/api/v1/themes/nord").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(nord["spec"]["colors"]["accent"], "#88c0d0");
+        let (status, _, _) = call(api::router(state.clone()), "/api/v1/themes/gone").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (_, _, site) = call(api::router(state.clone()), "/api/v1/site").await;
+        assert_eq!(site["spec"]["theme"], "nord");
+        assert_eq!(site["spec"]["descriptions"]["themes"], "Fixture palettes.");
     }
 
     #[tokio::test]

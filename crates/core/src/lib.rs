@@ -9,11 +9,13 @@ pub mod types;
 
 mod error;
 mod markdown;
+#[cfg(test)]
+mod testing;
 
 pub use db::Db;
 pub use error::Error;
 pub use index::SyncReport;
-pub use store::{Profile, Project, ProjectSummary, SiteConfig, SyncState};
+pub use store::{Profile, Project, ProjectSummary, SiteConfig, SyncState, Theme};
 
 /// Release version, stamped at build time through `HLDR_VERSION`.
 ///
