@@ -14,6 +14,8 @@ pub struct Stub {
     pub discovery_calls: Arc<AtomicUsize>,
     /// Kinds served beyond `projects`, added while a test runs.
     pub extra: Arc<std::sync::Mutex<Vec<Value>>>,
+    /// What `/healthz` reports as the server's version.
+    pub version: Arc<std::sync::Mutex<String>>,
 }
 
 pub fn resource(name: &str, singular: &str, kind: &str) -> Value {
@@ -48,10 +50,22 @@ impl Stub {
         self.discovery_calls.load(Ordering::SeqCst)
     }
 
+    pub fn set_version(&self, version: &str) {
+        *self.version.lock().unwrap() = version.to_owned();
+    }
+
     /// Serves the stub; see [`spawn`].
     pub fn serve(&self) -> String {
         let stub = self.clone();
+        let version = Arc::clone(&self.version);
         let app = Router::new()
+            .route(
+                "/healthz",
+                get(move || {
+                    let version = version.lock().unwrap().clone();
+                    async move { axum::Json(json!({"status": "ok", "version": version})) }
+                }),
+            )
             .route(
                 "/api/v1/api-resources",
                 get(move || {
@@ -185,6 +199,10 @@ pub mod hub {
                         resource("site", "site", "Site", "site.yaml", true),
                     ]}))
                 }),
+            )
+            .route(
+                "/healthz",
+                get(|| async { Json(json!({"status": "ok", "version": "dev"})) }),
             )
             .route("/api/v1/schema", get(|| async { Json(json!({})) }))
             .route("/api/v1/sync", get(status).post(sync))

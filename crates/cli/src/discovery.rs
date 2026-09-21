@@ -2,8 +2,9 @@
 //!
 //! The catalog and the schemas come from the server, so a kind added there
 //! works here without a new CLI. The cache lives per server under
-//! `$XDG_CACHE_HOME/hldr/` and is refreshed after six hours, or at once when
-//! a type is not found in it.
+//! `$XDG_CACHE_HOME/hldr/` and is refreshed after six hours, when the server
+//! runs another version than the one that filled it, or at once when a type
+//! is not found in it.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,6 +21,10 @@ const TTL: Duration = Duration::from_secs(6 * 3600);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Discovery {
     fetched_at: u64,
+    /// Version of the server that answered. An upgrade can change the kinds
+    /// and their schemas, so a cache from another version is stale.
+    #[serde(default)]
+    server_version: Option<String>,
     pub resources: Vec<ApiResource>,
     pub schemas: Map<String, Value>,
 }
@@ -34,6 +39,7 @@ impl Discovery {
         };
         Ok(Self {
             fetched_at: now,
+            server_version: server_version(client)?,
             resources: resources.items,
             schemas,
         })
@@ -77,8 +83,8 @@ impl<'a> Catalog<'a> {
                 .read_cache()
                 .filter(|d| now().saturating_sub(d.fetched_at) < TTL.as_secs())
             {
-                Some(cached) => cached,
-                None => self.fetch()?,
+                Some(cached) if cached.server_version == server_version(self.client)? => cached,
+                _ => self.fetch()?,
             },
         };
         Ok(self.discovery.insert(loaded))
@@ -134,6 +140,13 @@ impl<'a> Catalog<'a> {
     }
 }
 
+/// What `/healthz` reports, which never touches the server's database.
+fn server_version(client: &Client) -> Result<Option<String>> {
+    Ok(client.get("/healthz")?["version"]
+        .as_str()
+        .map(str::to_owned))
+}
+
 /// One cache directory per server, named after its URL.
 fn host_dir(base: &str) -> String {
     base.split_once("://")
@@ -174,6 +187,7 @@ mod tests {
     fn finds_by_any_name() {
         let discovery = Discovery {
             fetched_at: 0,
+            server_version: None,
             resources: vec![resource("projects", "project", &["proj", "p"], "Project")],
             schemas: Map::new(),
         };
@@ -221,5 +235,31 @@ mod tests {
         assert_eq!(stub.calls(), 2, "a kind the cache lacks is fetched");
         catalog.resolve("posts").unwrap_err();
         assert_eq!(stub.calls(), 2, "one refresh per run");
+    }
+
+    #[test]
+    fn a_server_upgrade_invalidates_the_cache() {
+        let stub = Stub::default();
+        stub.set_version("3.4.0");
+        let client = Client::new(stub.serve());
+        let cache = tempfile::tempdir().unwrap();
+
+        Catalog::new(&client, Some(cache.path()))
+            .discovery()
+            .unwrap();
+        Catalog::new(&client, Some(cache.path()))
+            .discovery()
+            .unwrap();
+        assert_eq!(stub.calls(), 1, "same version, cached");
+
+        stub.set_version("3.5.0");
+        Catalog::new(&client, Some(cache.path()))
+            .discovery()
+            .unwrap();
+        assert_eq!(stub.calls(), 2, "another version, fetched again");
+        Catalog::new(&client, Some(cache.path()))
+            .discovery()
+            .unwrap();
+        assert_eq!(stub.calls(), 2, "and cached for it");
     }
 }
