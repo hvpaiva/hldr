@@ -38,7 +38,6 @@ impl Default for Markdown {
 fn gfm_options() -> Options<'static> {
     let mut options = Options::default();
     options.extension.strikethrough = true;
-    options.extension.tagfilter = true;
     options.extension.table = true;
     options.extension.autolink = true;
     options.extension.tasklist = true;
@@ -116,6 +115,15 @@ mod tests {
         let html = md.html("```rust\nfn main() {}\n```\n");
         assert!(html.contains("<pre"), "{html}");
         assert!(html.contains("class="), "{html}");
+    }
+
+    #[test]
+    fn raw_html_is_omitted() {
+        let md = Markdown::new();
+        let html = md.html("<script>alert(1)</script>\n\ntext <iframe src=x></iframe>\n");
+        assert!(!html.contains("<script"), "{html}");
+        assert!(!html.contains("<iframe"), "{html}");
+        assert!(html.contains("text"), "{html}");
     }
 
     #[test]
