@@ -6,8 +6,9 @@ HTML in a browser. Text if you `curl`. Content is markdown in git; runtime
 state lives in SQLite. Administration is a CLI in the kubectl shape — there
 is no web panel. JavaScript is not required to read the pages.
 
-The site is a sample of the craft. A merge to `main` is what turns
-production.
+The site is a sample of the craft. Production moves when a `v*` tag
+matches `workspace.package.version` in `Cargo.toml`. A push to `main`
+runs the suite; it does not deploy.
 
 ## Workspace
 
@@ -44,8 +45,8 @@ cargo test --workspace
 
 ## Deploy
 
-`kamal deploy` from a checkout of `main`. CI runs the suite, then the same
-command.
+`kamal deploy --version <semver>` from a checkout whose `Cargo.toml`
+matches the version. CI does that on a `vMAJOR.MINOR.PATCH` tag.
 
 ## License
 

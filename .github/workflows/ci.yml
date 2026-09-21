@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ["v*.*.*"]
   workflow_dispatch:
 
 concurrency:
@@ -17,12 +18,13 @@ jobs:
       check: ${{ steps.filter.outputs.check }}
       deploy: ${{ steps.filter.outputs.deploy }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - id: filter
         env:
           EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
@@ -31,7 +33,7 @@ jobs:
           set -euo pipefail
           check=false
           deploy=false
-          if [ "$EVENT" = "workflow_dispatch" ]; then
+          if [ "$EVENT" = "workflow_dispatch" ] || [[ "$REF" == refs/tags/v* ]]; then
             check=true
             deploy=true
           else
@@ -39,7 +41,6 @@ jobs:
               range="${PR_BASE}...${PR_HEAD}"
             elif [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
               check=true
-              deploy=true
               range=""
             else
               range="${BEFORE}...${AFTER}"
@@ -49,10 +50,6 @@ jobs:
                 case "$f" in
                   crates/*|Cargo.toml|Cargo.lock|migrations/*|deny.toml)
                     check=true
-                    deploy=true
-                    ;;
-                  content/*|Dockerfile|.dockerignore|config/*|.kamal/*)
-                    deploy=true
                     ;;
                 esac
               done < <(git diff --name-only "$range")
@@ -66,15 +63,15 @@ jobs:
     if: needs.filter.outputs.check == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --workspace -- -D warnings
       - run: cargo test --workspace
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
 
   deploy:
     needs: [filter, check]
@@ -85,7 +82,8 @@ jobs:
       needs.filter.outputs.deploy == 'true' &&
       (needs.check.result == 'success' || needs.check.result == 'skipped') &&
       github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/main'
+      (startsWith(github.ref, 'refs/tags/v') ||
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     environment:
       name: production
@@ -94,17 +92,49 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: version
+        run: |
+          set -euo pipefail
+          cargo_ver=$(awk '
+            /^\[workspace.package\]/ { p=1; next }
+            p && /^\[/ { exit }
+            p && /^version =/ {
+              gsub(/[" ]/, "")
+              split($0, a, "=")
+              print a[2]
+              exit
+            }
+          ' Cargo.toml)
+          if [ -z "$cargo_ver" ]; then
+            echo "workspace.package.version missing" >&2
+            exit 1
+          fi
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "$GITHUB_SHA is not on origin/main" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$cargo_ver" ]; then
+              echo "tag $GITHUB_REF_NAME does not match Cargo.toml $cargo_ver" >&2
+              exit 1
+            fi
+          fi
+          echo "semver=$cargo_ver" >> "$GITHUB_OUTPUT"
+      - uses: ruby/setup-ruby@e5517072e87f198d9533967ae13d97c11b604005 # v1.99.0
         with:
           ruby-version: "3.3"
       - run: gem install kamal -v 2.12.0
-      - uses: docker/setup-buildx-action@v3
-      - uses: crazy-max/ghaction-github-runtime@v3
-      - uses: webfactory/ssh-agent@v0.9.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
+      - uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
         with:
           ssh-private-key: ${{ secrets.APOLLO_DEPLOY_KEY }}
       - run: mkdir -p ~/.ssh && cp .kamal/known_hosts ~/.ssh/known_hosts
-      - run: kamal deploy
+      - run: kamal deploy --version "${{ steps.version.outputs.semver }}"
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}

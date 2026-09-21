@@ -627,6 +627,10 @@ fn oneline(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn ld_json(value: serde_json::Value) -> String {
+    value.to_string().replace('<', r"\u003c")
+}
+
 fn person_ld(site: &Site, profile: &Profile) -> String {
     let mut same_as = Vec::new();
     if let Some(github) = &profile.links.github {
@@ -635,7 +639,7 @@ fn person_ld(site: &Site, profile: &Profile) -> String {
     if let Some(linkedin) = &profile.links.linkedin {
         same_as.push(linkedin.clone());
     }
-    serde_json::json!({
+    ld_json(serde_json::json!({
         "@context": "https://schema.org",
         "@type": "Person",
         "name": profile.name,
@@ -643,12 +647,11 @@ fn person_ld(site: &Site, profile: &Profile) -> String {
         "url": site.origin,
         "email": profile.email,
         "sameAs": same_as,
-    })
-    .to_string()
+    }))
 }
 
 fn software_ld(site: &Site, project: &Project) -> String {
-    serde_json::json!({
+    ld_json(serde_json::json!({
         "@context": "https://schema.org",
         "@type": "SoftwareSourceCode",
         "name": project.title,
@@ -656,6 +659,17 @@ fn software_ld(site: &Site, project: &Project) -> String {
         "url": format!("{}/projects/{}", site.origin, project.slug),
         "codeRepository": project.links.repo,
         "programmingLanguage": project.tags,
-    })
-    .to_string()
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ld_json_neutralizes_script_breakout() {
+        let out = super::ld_json(serde_json::json!({
+            "name": "</script><img src=x onerror=alert(1)>"
+        }));
+        assert!(!out.contains("</script>"));
+        assert!(out.contains(r"\u003c/script>"));
+    }
 }
