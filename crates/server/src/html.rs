@@ -2,7 +2,7 @@
 //! Every page is complete without JavaScript; `keys.js` and `vim.js` only
 //! add the keyboard layer on top.
 
-use hldr_core::{Profile, Project, ProjectSummary, SiteConfig, Theme};
+use hldr_core::{Profile, Project, ProjectSummary, SiteConfig, SyncState, Theme};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 use crate::Site;
@@ -12,7 +12,9 @@ use crate::theme;
 const WRAP: usize = 72;
 const TREE_OPEN_MAX: usize = 8;
 /// Commands that only exist once vim.js can run them.
-const JS_ONLY: [&str; 2] = ["find", "checkhealth"];
+const JS_ONLY: [&str; 1] = ["find"];
+/// Where the server's source lives, for links to its releases and commits.
+const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// What every page needs around its buffer: the file tree and the site's
 /// identity.
@@ -105,7 +107,8 @@ fn layout(page: Page<'_>, lines: Vec<Markup>) -> Markup {
                             a href="/projects" {
                                 (count) @if count == 1 { " project" } @else { " projects" }
                             }
-                            " · hldr " (hldr_core::VERSION)
+                            " · "
+                            a href="/health" title=":checkhealth" { "hldr " (hldr_core::VERSION) }
                         }
                         span #pos .pos { (lines.len()) "L" }
                     }
@@ -152,7 +155,7 @@ fn tree(tree: &Tree<'_>, current: &str) -> Markup {
             (tree_cmd("/theme", ":", "colorscheme", None, "colorscheme", current))
             (tree_cmd("/projects", "/", "find file", Some("␣ff"), "find", current))
             (tree_cmd("/help", ":", "help", Some("F1"), "help", current))
-            (tree_cmd("/healthz", ":", "checkhealth", None, "checkhealth", current))
+            (tree_cmd("/health", ":", "checkhealth", None, "checkhealth", current))
         }
         details.sec data-fold="elsewhere" open {
             summary.hd { "elsewhere" }
@@ -561,6 +564,96 @@ pub fn help(site: &Site, tree: &Tree<'_>, theme: &Theme) -> Markup {
     )
 }
 
+/// What `/health` reports beyond the build: where content comes from and how
+/// its last sync went.
+pub struct Health<'a> {
+    /// Such as `github.com/hvpaiva/hldr-content@main`.
+    pub source: String,
+    /// `owner/name` when content comes from GitHub, for links to commits.
+    pub repository: Option<&'a str>,
+    pub sync: &'a SyncState,
+    /// Every project indexed, drafts included.
+    pub projects: i64,
+    pub themes: usize,
+}
+
+/// `:checkhealth` as a page: rendered on the server from the state the
+/// private API reports, so it needs no script and shows what a visitor gets.
+pub fn health(site: &Site, tree: &Tree<'_>, report: &Health<'_>, theme: &Theme) -> Markup {
+    let ok = |text: Markup| html! { p { span.ok { "- OK" } " " (text) } };
+    let warn = |text: Markup| html! { p { span.warn { "- WARNING" } " " (text) } };
+    let error = |text: Markup| html! { p { span.err { "- ERROR" } " " (text) } };
+    let commit = |base: &str, sha: &str| {
+        let short = sha.get(..12).unwrap_or(sha);
+        html! { a href=(format!("{base}/commit/{sha}")) { (short) } }
+    };
+    let built = if hldr_core::REVISION.len() == 40 {
+        html! { ", built from " (commit(REPOSITORY, hldr_core::REVISION)) }
+    } else {
+        html! { ", built from " span.mk { (hldr_core::REVISION) } }
+    };
+    let version = if hldr_core::VERSION == "dev" {
+        html! { "hldr dev" }
+    } else {
+        let tag = format!("v{}", hldr_core::VERSION);
+        html! { a href=(format!("{REPOSITORY}/releases/tag/{tag}")) { "hldr " (hldr_core::VERSION) } }
+    };
+    let sync = report.sync;
+    let served = match (&sync.synced_at, &sync.revision, report.repository) {
+        (None, _, _) => error(html! { "nothing synced yet: the site has no content to serve" }),
+        (Some(at), Some(revision), Some(repo)) => ok(html! {
+            "serving " (commit(&format!("https://github.com/{repo}"), revision)) ", synced " (at)
+        }),
+        (Some(at), _, _) => ok(html! { "serving the directory as it is on disk, synced " (at) }),
+    };
+    let attempt = sync.last_attempt_at.as_deref().unwrap_or("never");
+    let mut lines = vec![
+        html! { h1.h1 { "hldr: require(\"hldr.health\").check()" } },
+        html! { p {} },
+        html! { h2.h2 { span.mk { "## " } "server" } },
+        ok(html! { (version) (built) }),
+        ok(html! {
+            "database answers; " (count(report.projects, "project")) " and "
+            (count(report.themes as i64, "theme")) " indexed"
+        }),
+        html! { p {} },
+        html! { h2.h2 { span.mk { "## " } "content" } },
+        ok(html! { "source " (report.source) }),
+        served,
+    ];
+    match &sync.last_error {
+        None => lines.push(ok(html! { "last sync attempt " (attempt) " succeeded" })),
+        Some(message) => {
+            lines.push(warn(html! {
+                "last sync attempt " (attempt) " failed; the revision above is still served:"
+            }));
+            for line in message.lines() {
+                lines.push(html! { p.err { "    " (line) } });
+            }
+        }
+    }
+    lines.extend([
+        html! { p {} },
+        html! { h2.h2 { span.mk { "## " } "ui" } },
+        ok(html! { "colorscheme " a href="/theme" { (theme.slug) } }),
+        ok(html! { "javascript: optional; every page is a URL" }),
+    ]);
+    layout(
+        Page {
+            site,
+            tree,
+            theme,
+            path: "/health",
+            file: "[checkhealth]",
+            filetype: "checkhealth",
+            title: &tree.title("checkhealth"),
+            description: "Server version, content revision and sync state.",
+            json_ld: None,
+        },
+        lines,
+    )
+}
+
 pub fn not_found(site: &Site, tree: &Tree<'_>, path: &str, detail: &str, theme: &Theme) -> Markup {
     let file = path.trim_start_matches('/');
     let lines = vec![
@@ -625,6 +718,10 @@ fn elsewhere(profile: &Profile, with_source: bool) -> Vec<Markup> {
             html! { p { span.mk { "- " } (pad_to(key, 9)) a href=(href) rel="me" { (label) } } }
         })
         .collect()
+}
+
+fn count(n: i64, what: &str) -> String {
+    format!("{n} {what}{}", if n == 1 { "" } else { "s" })
 }
 
 fn name_width(projects: &[ProjectSummary]) -> usize {

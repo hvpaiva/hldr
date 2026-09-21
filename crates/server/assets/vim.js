@@ -329,7 +329,7 @@
       if (tag) go(`/help#${tag}`); else msg(`E149: Sorry, no help for ${arg}`, "e");
       return;
     }
-    if (is("checkhealth", "che")) { health(); return; }
+    if (is("checkhealth", "che")) { go("/health"); return; }
     if (is("bn", "bnext")) { cycle(1); return; }
     if (is("bp", "bprevious", "bN")) { cycle(-1); return; }
     if (is("bd", "bdelete", "bw", "bwipeout")) { window.hldrTabs.close(here); return; }
@@ -375,22 +375,6 @@
       opt("h", "help", ":help", 'data-go="/help"') + opt("q", "quit", ":q", 'data-ex="q"') +
       `</div><p class="mk">every buffer is closed. pick one, or type :help&lt;Enter&gt; or &lt;F1&gt;</p></div></div>`, "intro");
     $("#bufs").innerHTML = '<span class="tab on"><a href="/">[No Name]</a></span>';
-  };
-  const health = async () => {
-    const row = (id) => `<p id="${id}"><span class="mk">- </span>…</p>`;
-    transient("health://", "checkhealth", `<h1 class="h1">hldr: require("hldr.health").check()</h1><p></p><h2 class="h2">site</h2>${row("hz")}${row("rz")}<p></p>` +
-      `<h2 class="h2">content</h2><p><span class="ok">- OK</span> ${esc($(".status .ver a")?.textContent || "")} indexed</p><p></p>` +
-      `<h2 class="h2">ui</h2><p><span class="ok">- OK</span> colorscheme ${esc(document.documentElement.dataset.theme)}</p>` +
-      `<p><span class="ok">- OK</span> javascript: optional; every file is a URL</p>`);
-    for (const [id, path] of [["hz", "/healthz"], ["rz", "/readyz"]]) {
-      const t0 = performance.now();
-      try {
-        const r = await fetch(path, { cache: "no-store" });
-        const ms = (performance.now() - t0).toFixed(1);
-        let v = ""; try { v = (await r.json()).version; } catch { /* not json */ }
-        $("#" + id).innerHTML = `<span class="${r.ok ? "ok" : "err"}">- ${r.ok ? "OK" : "ERROR"}</span> ${path} ${r.status}${v ? " · version " + esc(v) : ""} · ${ms}ms`;
-      } catch { $("#" + id).innerHTML = `<span class="err">- ERROR</span> ${path} unreachable`; }
-    }
   };
 
   // finder

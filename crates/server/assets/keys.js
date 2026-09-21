@@ -89,7 +89,7 @@
   document.addEventListener("click", (e) => {
     const x = e.target.closest("[data-close]");
     if (x) return close(x.dataset.close);
-    const c = e.target.closest("[data-cmd=find], [data-cmd=checkhealth]");
+    const c = e.target.closest("[data-cmd=find]");
     if (c) {
       e.preventDefault();
       vim().then((v) => v.run(c.dataset.cmd));

@@ -174,6 +174,7 @@ fn site_router(state: AppState) -> Router {
         .route("/about", get(about))
         .route("/profile", get(profile_page))
         .route("/help", get(help_page))
+        .route("/health", get(health_page))
         .route("/blog", get(blog))
         .route("/blog/{slug}", get(blog_post))
         .route("/healthz", get(healthz))
@@ -449,6 +450,28 @@ async fn help_page(
 ) -> Result<Response, AppError> {
     let chrome = Chrome::load(&state, &headers).await?;
     Ok(html::help(&state.site, &chrome.tree(), &chrome.theme).into_response())
+}
+
+async fn health_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let chrome = Chrome::load(&state, &headers).await?;
+    let sync = state.db.sync_state().await?;
+    let themes = state.db.themes().await?.len();
+    let origin = state.syncer.source().origin();
+    let report = html::Health {
+        source: state.syncer.source().describe(),
+        repository: origin.as_ref().map(|(repo, _)| repo.as_str()),
+        sync: &sync,
+        projects: state.db.project_count().await?,
+        themes,
+    };
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        html::health(&state.site, &chrome.tree(), &report, &chrome.theme),
+    )
+        .into_response())
 }
 
 async fn vim_js() -> impl IntoResponse {
@@ -850,6 +873,49 @@ kind: Site
         assert!(home.contains("AMPLE"), "banner");
         let (_, projects) = page(site_router(state.clone()), "/projects", None).await;
         assert!(projects.contains("Fixture projects."));
+    }
+
+    #[tokio::test]
+    async fn health_is_a_page() {
+        let content = fixture_copy();
+        let (_dir, state) = state_over(content.path().to_owned(), true).await;
+        let response = site_router(state.clone())
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+
+        let (_, body) = page(site_router(state.clone()), "/health", None).await;
+        assert!(body.contains("- OK</span> source dir:"), "{body}");
+        assert!(body.contains("serving the directory as it is on disk"));
+        assert!(body.contains("2 projects and 2 themes indexed"));
+        assert!(body.contains("succeeded"));
+        assert!(!body.contains("WARNING"));
+        assert!(!body.contains("<script>"), "no inline script");
+
+        std::fs::write(
+            content.path().join("projects/atlas.md"),
+            "---\nkind: Site\n---\n",
+        )
+        .unwrap();
+        assert!(state.syncer.sync(false).await.is_err());
+        let (_, body) = page(site_router(state.clone()), "/health", None).await;
+        assert!(
+            body.contains("- WARNING</span> last sync attempt"),
+            "{body}"
+        );
+        assert!(body.contains("projects/atlas.md"));
+
+        let (_, home) = page(site_router(state.clone()), "/", None).await;
+        assert!(
+            home.contains(r#"<a href="/health" title=":checkhealth">hldr "#),
+            "statusline"
+        );
+        assert!(
+            home.contains(r#"href="/health" data-cmd="checkhealth""#),
+            "tree"
+        );
     }
 
     #[tokio::test]
