@@ -3,6 +3,7 @@ use serde::Serialize;
 pub mod api;
 #[cfg(feature = "store")]
 pub mod db;
+pub mod github;
 #[cfg(feature = "store")]
 pub mod index;
 pub mod manifest;

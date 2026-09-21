@@ -25,13 +25,30 @@ pub fn resource(name: &str, singular: &str, kind: &str) -> Value {
     })
 }
 
+/// Serves `app` on a random local port from a background thread and returns
+/// the base URL.
+pub fn spawn(app: Router) -> String {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            tx.send(listener.local_addr().unwrap()).unwrap();
+            axum::serve(listener, app).await.unwrap();
+        });
+    });
+    format!("http://{}", rx.recv().unwrap())
+}
+
 impl Stub {
     pub fn calls(&self) -> usize {
         self.discovery_calls.load(Ordering::SeqCst)
     }
 
-    /// Serves on a random local port from a background thread and returns
-    /// the base URL.
+    /// Serves the stub; see [`spawn`].
     pub fn serve(&self) -> String {
         let stub = self.clone();
         let app = Router::new()
@@ -67,19 +84,7 @@ impl Stub {
                 "/api/v1/plain",
                 get(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response() }),
             );
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            runtime.block_on(async move {
-                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                tx.send(listener.local_addr().unwrap()).unwrap();
-                axum::serve(listener, app).await.unwrap();
-            });
-        });
-        format!("http://{}", rx.recv().unwrap())
+        spawn(app)
     }
 }
 
@@ -96,6 +101,8 @@ pub mod hub {
     use axum::response::{IntoResponse, Response};
     use axum::routing::{get, patch, post};
     use serde_json::{Value, json};
+
+    use super::spawn;
 
     type Files = BTreeMap<String, String>;
 
@@ -188,19 +195,7 @@ pub mod hub {
             .route("/repos/o/r/git/commits", post(new_commit))
             .route("/repos/o/r/git/refs/heads/main", patch(move_ref))
             .with_state(repo);
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            runtime.block_on(async move {
-                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                tx.send(listener.local_addr().unwrap()).unwrap();
-                axum::serve(listener, app).await.unwrap();
-            });
-        });
-        format!("http://{}", rx.recv().unwrap())
+        spawn(app)
     }
 
     fn status_body(repo: &Repo) -> Value {

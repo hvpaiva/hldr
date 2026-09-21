@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use hldr_core::github::{self, RateLimit};
 use serde_json::{Value, json};
 
 pub const API: &str = "https://api.github.com";
@@ -84,18 +85,12 @@ impl GitHub {
             .agent
             .get(format!("{}/contents/{path}?ref={commit}", self.base))
             .header("Accept", "application/vnd.github.raw");
-        let mut response = self
+        let response = self
             .authorized(request)
             .call()
             .with_context(|| format!("cannot reach GitHub for {path}"))?;
-        let status = response.status();
-        let body = response
-            .body_mut()
-            .with_config()
-            .limit(MAX_BODY)
-            .read_to_string()
-            .with_context(|| format!("reading {path} from GitHub"))?;
-        match status.as_u16() {
+        let (status, body) = answer(response).with_context(|| format!("reading {path}"))?;
+        match status {
             200 => Ok(Some(body)),
             404 => Ok(None),
             code => Err(github_error(code, &body)).with_context(|| format!("reading {path}")),
@@ -168,15 +163,8 @@ impl GitHub {
             ("PATCH", Some(body)) => self.send(self.agent.patch(&url), &body)?,
             _ => bail!("unsupported request {method} {path}"),
         };
-        let mut response = response.with_context(|| format!("cannot reach GitHub for {path}"))?;
-        let status = response.status().as_u16();
-        let text = response
-            .body_mut()
-            .with_config()
-            .limit(MAX_BODY)
-            .read_to_string()
-            .with_context(|| format!("reading GitHub's answer to {method} {path}"))?;
-        Ok((status, text))
+        let response = response.with_context(|| format!("cannot reach GitHub for {path}"))?;
+        answer(response).with_context(|| format!("{method} {path}"))
     }
 
     fn send(
@@ -201,6 +189,35 @@ impl GitHub {
     }
 }
 
+/// An answer's status and body; a spent rate limit is an error that says
+/// when it resets, whatever the request was.
+fn answer(mut response: ureq::http::Response<ureq::Body>) -> Result<(u16, String)> {
+    let status = response.status().as_u16();
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+    };
+    let now = github::now();
+    if let Some(limit) = RateLimit::from_answer(
+        status,
+        header("x-ratelimit-remaining"),
+        header("x-ratelimit-reset"),
+        header("retry-after"),
+        now,
+    ) {
+        bail!("{}", limit.message(now));
+    }
+    let text = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_BODY)
+        .read_to_string()
+        .context("reading GitHub's answer")?;
+    Ok((status, text))
+}
+
 fn sha(value: &Value) -> Result<String> {
     value
         .as_str()
@@ -221,4 +238,38 @@ fn github_error(status: u16, body: &str) -> anyhow::Error {
         _ => "",
     };
     anyhow!("GitHub answered {message} ({status}){hint}")
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::Router;
+    use axum::http::StatusCode;
+    use axum::routing::get;
+
+    use super::*;
+
+    #[test]
+    fn a_spent_rate_limit_says_when_it_resets() {
+        let reset = github::now() + 600;
+        let app = Router::new().route(
+            "/repos/o/r/git/ref/heads/main",
+            get(move || async move {
+                (
+                    StatusCode::FORBIDDEN,
+                    [
+                        ("x-ratelimit-remaining", "0".to_owned()),
+                        ("x-ratelimit-reset", reset.to_string()),
+                    ],
+                    r#"{"message":"API rate limit exceeded for 203.0.113.9."}"#,
+                )
+            }),
+        );
+        let hub = GitHub::new(&crate::stub::spawn(app), "o/r", None).unwrap();
+        let err = format!("{:#}", hub.head("main").unwrap_err());
+        assert!(
+            err.contains("GitHub rate limit exceeded; it resets at "),
+            "{err}"
+        );
+        assert!(err.contains("in 10 min"), "{err}");
+    }
 }

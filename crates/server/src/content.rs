@@ -11,6 +11,7 @@ use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+use hldr_core::github::RateLimit;
 use hldr_core::{Db, SyncReport};
 
 const GITHUB_API: &str = "https://api.github.com";
@@ -291,6 +292,7 @@ impl GitHub {
     fn new(api: &str, repo: &str, token: Option<String>) -> Self {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(HTTP_TIMEOUT))
+            .http_status_as_error(false)
             .user_agent(format!("hldr-server/{}", hldr_core::VERSION))
             .build()
             .into();
@@ -298,6 +300,36 @@ impl GitHub {
             agent,
             base: format!("{api}/repos/{repo}"),
             token,
+        }
+    }
+
+    /// The body of a successful answer. A spent rate limit says when it
+    /// resets, so `last_error` tells how long the site stays behind.
+    fn call(
+        request: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
+        what: &str,
+    ) -> Result<ureq::Body, String> {
+        let response = request.call().map_err(|err| format!("{what}: {err}"))?;
+        let status = response.status().as_u16();
+        if (200..300).contains(&status) {
+            return Ok(response.into_body());
+        }
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+        };
+        let now = hldr_core::github::now();
+        match RateLimit::from_answer(
+            status,
+            header("x-ratelimit-remaining"),
+            header("x-ratelimit-reset"),
+            header("retry-after"),
+            now,
+        ) {
+            Some(limit) => Err(format!("{what}: {}", limit.message(now))),
+            None => Err(format!("{what}: http status: {status}")),
         }
     }
 
@@ -320,12 +352,11 @@ impl GitHub {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_nanos());
-        let sha = self
+        let what = format!("resolve {git_ref}");
+        let request = self
             .get(format!("{}/commits/{git_ref}?fresh={nonce}", self.base))
-            .header("Accept", "application/vnd.github.sha")
-            .call()
-            .map_err(|err| format!("resolve {git_ref}: {err}"))?
-            .into_body()
+            .header("Accept", "application/vnd.github.sha");
+        let sha = Self::call(request, &what)?
             .with_config()
             .limit(128)
             .read_to_string()
@@ -339,11 +370,8 @@ impl GitHub {
     }
 
     fn download(&self, sha: &str, dest: &Path) -> Result<(), String> {
-        let reader = self
-            .get(format!("{}/tarball/{sha}", self.base))
-            .call()
-            .map_err(|err| format!("download {sha}: {err}"))?
-            .into_body()
+        let request = self.get(format!("{}/tarball/{sha}", self.base));
+        let reader = Self::call(request, &format!("download {sha}"))?
             .into_with_config()
             .limit(MAX_ARCHIVE_BYTES)
             .reader();
@@ -551,12 +579,15 @@ mod tests {
         use axum::Router;
         use axum::extract::{Path, State};
         use axum::http::StatusCode;
+        use axum::response::{IntoResponse, Response};
         use axum::routing::get;
 
         #[derive(Clone, Default)]
         pub struct Stub {
             pub sha: Arc<Mutex<Option<String>>>,
             pub downloads: Arc<AtomicUsize>,
+            /// When set, every answer is a spent rate limit resetting then.
+            pub limited_until: Arc<Mutex<Option<u64>>>,
         }
 
         impl Stub {
@@ -580,12 +611,18 @@ mod tests {
             }
         }
 
-        async fn commit(State(stub): State<Stub>) -> Result<String, StatusCode> {
-            stub.sha
-                .lock()
-                .unwrap()
-                .clone()
-                .ok_or(StatusCode::NOT_FOUND)
+        async fn commit(State(stub): State<Stub>) -> Response {
+            if let Some(reset) = *stub.limited_until.lock().unwrap() {
+                let headers = [
+                    ("x-ratelimit-remaining", "0".to_owned()),
+                    ("x-ratelimit-reset", reset.to_string()),
+                ];
+                return (StatusCode::FORBIDDEN, headers, "rate limited").into_response();
+            }
+            match stub.sha.lock().unwrap().clone() {
+                Some(sha) => sha.into_response(),
+                None => StatusCode::NOT_FOUND.into_response(),
+            }
         }
 
         async fn tarball(
@@ -645,6 +682,28 @@ mod tests {
         let state = db.sync_state().await.unwrap();
         assert_eq!(state.revision, Some(second));
         assert!(state.last_error.unwrap().contains("404"));
+    }
+
+    #[tokio::test]
+    async fn a_spent_rate_limit_is_recorded_with_its_reset() {
+        let stub = github_stub::Stub::default();
+        *stub.limited_until.lock().unwrap() = Some(hldr_core::github::now() + 1800);
+        let api = stub.serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path().join("hldr.db")).await.unwrap();
+        let syncer = Syncer::new(
+            ContentSource::github(&api, "o/r", "main").unwrap(),
+            db.clone(),
+        );
+
+        let err = syncer.sync(false).await.unwrap_err();
+        assert!(matches!(err, SyncError::Fetch(_)), "{err}");
+        let recorded = db.sync_state().await.unwrap().last_error.unwrap();
+        assert!(
+            recorded.starts_with("fetch: resolve main: GitHub rate limit exceeded; it resets at "),
+            "{recorded}"
+        );
+        assert!(recorded.ends_with("in 30 min"), "{recorded}");
     }
 
     #[tokio::test]
