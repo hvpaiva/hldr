@@ -1,9 +1,6 @@
 .git
 .github
-.direnv
 target
-result
-result-*
 deny.toml
 *.db
 *.db-shm
