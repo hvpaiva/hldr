@@ -40,7 +40,7 @@ env:
     HLDR_LOG: info
 
 volumes:
-  - /var/lib/hldr:/var/lib/hldr
+  - hldr_data:/var/lib/hldr
 
 logging:
   driver: json-file
