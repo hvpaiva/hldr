@@ -38,6 +38,14 @@ cargo build --workspace
 HLDR_CONTENT_DIR=../hldr-content cargo run -p hldr-server
 ```
 
+That is also the preview of a content change: with a checkout of
+hldr-content next to this one, a short poll picks up every save, and an
+invalid file leaves the last good state served with the error on `/health`:
+
+```
+HLDR_CONTENT_DIR=../hldr-content HLDR_CONTENT_POLL=2s cargo run -p hldr-server
+```
+
 Content comes from exactly one source:
 
 - `HLDR_CONTENT_DIR`: a checkout, read as it is on disk.
@@ -53,7 +61,10 @@ nothing synced yet, `/readyz` answers 503.
 
 Listens on `127.0.0.1:8080`. `HLDR_ADDR` overrides. `/healthz` does not
 touch the database; `/readyz` does, and adds the served content revision.
-Both report `version` and `revision`. SQLite defaults to `./hldr.db`.
+Both report `version` and `revision`. `/health` is the page behind
+`:checkhealth` and the version in the statusline: server version and
+revision, the served content revision, and how the last sync went,
+rendered without JavaScript. SQLite defaults to `./hldr.db`.
 `HLDR_ORIGIN` sets the canonical URL and defaults to the local listener.
 
 The private API (`/api/v1`, and `/healthz`) listens on `127.0.0.1:8081`.
@@ -62,7 +73,9 @@ socket path is taken over from whatever process held it, so a new container
 can boot while the old one still serves; a non-socket file at the path is
 an error. `GET /api/v1/sync` shows the sync state; `POST` runs a sync and
 answers once it is done: 422 when the content is invalid, 502 when it
-could not be fetched.
+could not be fetched. The server reads GitHub anonymously, 60 requests an
+hour per IP; a spent limit is recorded with the time it resets, and
+`HLDR_GITHUB_TOKEN` (read-only) raises it.
 
 
 ```
@@ -83,8 +96,19 @@ server in `--server`, then `HLDR_SERVER`, then `$XDG_CONFIG_HOME/hldr/config.yam
 server: https://apollo.<tailnet>.ts.net:8443
 ```
 
+Each release attaches a static Linux binary, `hldr-x86_64-unknown-linux-musl`,
+with its checksum:
+
 ```
-cargo install --path crates/cli
+gh release download --repo hvpaiva/hldr --pattern 'hldr-x86_64-unknown-linux-musl*'
+sha256sum -c hldr-x86_64-unknown-linux-musl.sha256
+install -m 755 hldr-x86_64-unknown-linux-musl ~/.local/bin/hldr
+```
+
+`hldr version` warns when it and the server come from different releases.
+From source: `cargo install --locked --path crates/cli`.
+
+```
 hldr api-resources
 hldr get projects -o wide
 hldr get theme nord retro-82 -o yaml
@@ -108,7 +132,17 @@ hldr sync                           # fetch now instead of on the next poll
 hldr sync status                    # served revision against the branch head
 ```
 
-Each command validates with the parser the server indexes with, then
+`hldr validate -f PATH` needs no server, config or network: it checks
+files with the parser the server indexes with and, for a directory, the
+checks across files too (every singleton exists, the default theme has a
+file). hldr-content runs it on every push.
+
+```
+hldr validate -f ~/dev/hldr-content
+hldr validate -f atlas.md
+```
+
+Each writing command validates with the parser the server indexes with, then
 commits every change at once on top of the commit it read; if the branch
 moved meanwhile, nothing is written. After committing, it asks the server
 to sync that exact commit and returns once the site shows it (`--no-sync`
@@ -151,12 +185,13 @@ cargo test --workspace
 2. The bump comes from Conventional Commits: `fix` patch, `feat` minor,
    `!`/`BREAKING CHANGE` major. Any other change to those inputs still
    takes a patch, so a version always names one image.
-3. `check` (fmt, clippy, tests, cargo-deny) and `build`
-   (`ghcr.io/hvpaiva/hldr:X.Y.Z`) run in parallel.
+3. `check` (fmt, clippy, tests, cargo-deny), `build`
+   (`ghcr.io/hvpaiva/hldr:X.Y.Z`) and `cli` (the static `hldr`) run in
+   parallel.
 4. `deploy` runs `kamal deploy --skip-push`. kamal-proxy switches traffic
    only after `/readyz` answers; otherwise the old container keeps serving.
 5. `release` tags `vX.Y.Z` with git-cliff notes and publishes the GitHub
-   Release. Tags are the production history.
+   Release with the CLI attached. Tags are the production history.
 
 A daily run retries a release that did not reach production and fails
 when `/healthz` disagrees with the last tag.
