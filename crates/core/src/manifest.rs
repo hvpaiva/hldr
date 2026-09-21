@@ -36,6 +36,13 @@ pub enum Format {
 }
 
 impl Kind {
+    pub const ALL: [Kind; 4] = [Self::Project, Self::Profile, Self::Site, Self::Theme];
+
+    /// The kind a file declares, such as `Project`.
+    pub fn from_declared(kind: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|known| known.as_str() == kind)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Project => "Project",

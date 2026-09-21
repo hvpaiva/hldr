@@ -58,6 +58,8 @@ enum Command {
     Delete(cmd::delete::Args),
     /// Have the server fetch its content now, or show where it stands
     Sync(cmd::sync::Args),
+    /// Check content files or a checkout offline, as the server would index them
+    Validate(cmd::validate::Args),
     /// Print the client, server and content versions
     Version(cmd::version::Args),
 }
@@ -88,6 +90,10 @@ fn main() -> ExitCode {
 /// Returns whether every requested resource was found; errors that stop the
 /// command come back as `Err`.
 fn run(cli: &Cli, env: &Env, out: &mut dyn Write) -> Result<bool> {
+    // Offline: neither the config file nor a server is needed, as in CI.
+    if let Command::Validate(args) = &cli.command {
+        return cmd::validate::run(out, args);
+    }
     let file = env.config_file();
     let config = Config::load(file.as_deref())?;
     let connect = || -> Result<Client> {
@@ -119,6 +125,7 @@ fn run(cli: &Cli, env: &Env, out: &mut dyn Write) -> Result<bool> {
         }
         Command::Version(args) if args.client_only() => cmd::version::run(out, None, args),
         Command::Version(args) => cmd::version::run(out, Some(&connect()?), args),
+        Command::Validate(args) => cmd::validate::run(out, args),
         Command::Get(args) => {
             let client = connect()?;
             cmd::get::run(

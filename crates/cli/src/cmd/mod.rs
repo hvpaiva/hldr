@@ -10,6 +10,7 @@ pub mod explain;
 pub mod get;
 pub mod patch;
 pub mod sync;
+pub mod validate;
 pub mod version;
 #[cfg(test)]
 mod write_tests;
