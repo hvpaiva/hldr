@@ -182,11 +182,9 @@ impl Site {
 }
 
 fn database_path() -> PathBuf {
-    if let Ok(path) = std::env::var("HLDR_DATABASE") {
-        return PathBuf::from(path);
-    }
-    let dir = std::env::var("STATE_DIRECTORY").unwrap_or_else(|_| ".".to_owned());
-    PathBuf::from(dir).join("hldr.db")
+    std::env::var("HLDR_DATABASE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("hldr.db"))
 }
 
 fn content_dir() -> PathBuf {
