@@ -6,9 +6,8 @@ HTML in a browser. Text if you `curl`. Content is markdown in git; runtime
 state lives in SQLite. Administration is a CLI in the kubectl shape — there
 is no web panel. JavaScript is not required to read the pages.
 
-The site is a sample of the craft. `fix:` and `feat:` on `main` update a
-release PR ([release-plz](https://release-plz.dev)). Merging that PR
-tags `v*` and deploys. A push to `main` by itself does not.
+The site is a sample of the craft. A push to `main` bumps semver from
+conventional commits, tags `v*`, and deploys. There is no release PR.
 
 ## Workspace
 
@@ -52,13 +51,12 @@ cargo test --workspace
 
 ## Deploy
 
-[release-plz](https://release-plz.dev) reads conventional commits,
-bumps `Cargo.toml` / `Cargo.lock`, and opens a PR. Merge it; the tag
-`vMAJOR.MINOR.PATCH` is what Kamal deploys to the instance configured in
-the GitHub Environment.
+Push to `main` runs Kamal. `fix:`/`feat:` bump the crate and the image
+tag together. Other commits redeploy the current version. CI does not
+block it.
 
-`workflow_dispatch` on `deploy` deploys the version already in the crate,
-without bumping.
+`workflow_dispatch` on `deploy` republishes the version already in
+`Cargo.toml`.
 
 ## License
 

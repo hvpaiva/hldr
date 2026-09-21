@@ -21,8 +21,7 @@ required to read it. `curl hvpaiva.dev` is a first-class interface.
 ## Why it exists
 
 A site that is also a sample of the craft. If the headers are sloppy or
-the deploy is a ritual, it contradicts the résumé. A `v*` tag publishes
-whatever instance the Environment currently points at.
+the deploy is a ritual, it contradicts the résumé. `main` is production.
 
 ## Decisions
 

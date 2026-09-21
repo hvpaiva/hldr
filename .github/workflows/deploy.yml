@@ -1,16 +1,9 @@
 name: deploy
 
 on:
-  workflow_call:
-    inputs:
-      version:
-        description: Semver without the v prefix. Empty reads Cargo.toml.
-        type: string
-        required: false
-        default: ""
-  workflow_dispatch:
   push:
-    tags: ["v*.*.*"]
+    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: hldr-deploy
@@ -23,29 +16,38 @@ jobs:
       name: production
       url: https://hvpaiva.dev
     permissions:
-      contents: read
+      contents: write
       packages: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - id: version
-        env:
-          INPUT: ${{ inputs.version }}
-          EVENT: ${{ github.event_name }}
-          REF: ${{ github.ref }}
+          fetch-tags: true
+      - id: guard
         run: |
           set -euo pipefail
-          git fetch --quiet origin main
+          git fetch --quiet --tags origin main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "$GITHUB_SHA is not on origin/main" >&2
             exit 1
           fi
-          if [ "$EVENT" = "push" ] && [[ "$REF" == refs/tags/v* ]]; then
-            ver="${REF#refs/tags/v}"
-          elif [ -n "$INPUT" ]; then
-            ver="${INPUT#v}"
-          else
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        if: github.event_name == 'push'
+      - uses: cargo-bins/cargo-binstall@b874e25ea559687bec77e281e9b271aa1367b624 # v1.23.0
+        if: github.event_name == 'push'
+      - if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cargo-binstall release-plz@0.3.169 --force --strategies=crate-meta-data,compile --no-confirm
+          git checkout --force -B main origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          release-plz update
+          if [[ -n "$(git status --porcelain)" ]]; then
+            git add -A
             ver=$(awk '
               /^\[workspace.package\]/ { p=1; next }
               p && /^\[/ { exit }
@@ -56,7 +58,25 @@ jobs:
                 exit
               }
             ' Cargo.toml)
+            git commit -m "chore: release v${ver}"
+            git fetch origin main
+            git rebase origin/main
+            git push origin HEAD:main
           fi
+          release-plz release --git-token "$GITHUB_TOKEN" --forge github
+      - id: version
+        run: |
+          set -euo pipefail
+          ver=$(awk '
+            /^\[workspace.package\]/ { p=1; next }
+            p && /^\[/ { exit }
+            p && /^version =/ {
+              gsub(/[" ]/, "")
+              split($0, a, "=")
+              print a[2]
+              exit
+            }
+          ' Cargo.toml)
           if [ -z "$ver" ]; then
             echo "semver missing" >&2
             exit 1
