@@ -33,6 +33,9 @@ pub fn run(out: &mut dyn Write, client: Option<&Client>, args: &Args) -> Result<
             "synced_at": sync["synced_at"],
             "last_error": sync["last_error"],
         });
+        if let Some(warning) = skew(hldr_core::VERSION, health["version"].as_str()) {
+            eprintln!("warning: {warning}");
+        }
     }
     match args.output.as_deref() {
         None => write!(out, "{}", text(&report))?,
@@ -47,6 +50,18 @@ impl Args {
     pub fn client_only(&self) -> bool {
         self.client
     }
+}
+
+/// Client and server ship from the same tag, so any difference means one of
+/// them is behind: the client may parse content in a way the server does not.
+fn skew(client: &str, server: Option<&str>) -> Option<String> {
+    let server = server.unwrap_or("unknown");
+    (client != server).then(|| {
+        format!(
+            "client {client} and server {server} differ; install the hldr released with the \
+             server (see `gh release download` in the hldr README)"
+        )
+    })
 }
 
 fn text(report: &Value) -> String {
@@ -83,6 +98,17 @@ fn text(report: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warns_when_client_and_server_differ() {
+        assert_eq!(skew("3.5.0", Some("3.5.0")), None);
+        let warning = skew("3.4.0", Some("3.5.0")).unwrap();
+        assert!(
+            warning.starts_with("client 3.4.0 and server 3.5.0 differ"),
+            "{warning}"
+        );
+        assert!(skew("dev", None).unwrap().contains("server unknown"));
+    }
 
     #[test]
     fn prints_client_server_and_content() {
