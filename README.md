@@ -80,7 +80,7 @@ Rollback, without rebuilding:
 gh workflow run deploy -f version=X.Y.Z
 ```
 
-The target is apollo at `72.61.46.31`, reached as `deploy` with the host keys
+The target is `apollo.hvpaiva.dev`, reached as `deploy` with the host keys
 in `config/known_hosts`; a rebuilt host has new keys, so update them there.
 App data lives in the `hldr_data` volume. From a
 laptop, with a key authorized for `deploy`:

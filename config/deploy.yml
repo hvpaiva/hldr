@@ -3,7 +3,7 @@ service: hldr
 image: hvpaiva/hldr
 
 servers:
-  - 72.61.46.31
+  - apollo.hvpaiva.dev
 
 proxy:
   ssl: true
