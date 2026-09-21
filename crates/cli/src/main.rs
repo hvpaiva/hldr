@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "hldr",
-    version,
+    version = hldr_core::VERSION,
     about = "Command-line interface for hvpaiva.dev"
 )]
 struct Cli {
@@ -19,6 +19,6 @@ enum Command {
 
 fn main() {
     match Cli::parse().command {
-        Command::Version => println!("hldr {}", hldr_core::VERSION),
+        Command::Version => println!("hldr {} ({})", hldr_core::VERSION, hldr_core::REVISION),
     }
 }

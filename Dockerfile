@@ -14,6 +14,9 @@ RUN mkdir -p crates/core/src crates/server/src crates/cli/src \
 
 COPY crates crates
 COPY migrations migrations
+# Declared after the dependency layer so a new version does not rebuild it.
+ARG HLDR_VERSION=dev
+ARG HLDR_REVISION=unknown
 # COPY preserves mtimes; cargo then keeps the dummy `fn main()` binary (~400KB).
 RUN find crates -name '*.rs' -exec touch {} + \
     && cargo build --release --locked -p hldr-server

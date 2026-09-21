@@ -93,7 +93,12 @@ async fn main() {
         .await
         .expect("failed to bind HLDR_ADDR");
 
-    tracing::info!(%addr, version = hldr_core::VERSION, "hldr-server listening");
+    tracing::info!(
+        %addr,
+        version = hldr_core::VERSION,
+        revision = hldr_core::REVISION,
+        "hldr-server listening"
+    );
 
     axum::serve(listener, app)
         .with_graceful_shutdown(terminate())
@@ -204,7 +209,11 @@ async fn readyz(State(state): State<AppState>) -> Response {
             tracing::error!(%error, "readyz failed");
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({ "status": "unready", "version": hldr_core::VERSION })),
+                Json(serde_json::json!({
+                    "status": "unready",
+                    "version": hldr_core::VERSION,
+                    "revision": hldr_core::REVISION,
+                })),
             )
                 .into_response()
         }
