@@ -9,7 +9,10 @@ use clap::{Parser, Subcommand};
 mod client;
 mod cmd;
 mod config;
+mod content;
 mod discovery;
+mod editor;
+mod github;
 mod print;
 #[cfg(test)]
 mod stub;
@@ -43,6 +46,18 @@ enum Command {
     Explain(cmd::explain::Args),
     /// List the resource types the server has
     ApiResources(cmd::api_resources::Args),
+    /// Edit a resource's file in $EDITOR and commit it
+    Edit(cmd::edit::Args),
+    /// Commit files to the content repository, as they are
+    Apply(cmd::apply::Args),
+    /// Show how applying files would change the content repository
+    Diff(cmd::diff::Args),
+    /// Change fields of a resource with a JSON merge patch
+    Patch(cmd::patch::Args),
+    /// Remove resources from the content repository
+    Delete(cmd::delete::Args),
+    /// Have the server fetch its content now, or show where it stands
+    Sync(cmd::sync::Args),
     /// Print the client, server and content versions
     Version(cmd::version::Args),
 }
@@ -61,7 +76,11 @@ fn main() -> ExitCode {
         Err(err) if broken_pipe(&err) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err:#}");
-            ExitCode::FAILURE
+            // `diff` answers with 1 itself, so its failures take 2, as kubectl's do.
+            match cli.command {
+                Command::Diff(_) => ExitCode::from(2),
+                _ => ExitCode::FAILURE,
+            }
         }
     }
 }
@@ -69,9 +88,9 @@ fn main() -> ExitCode {
 /// Returns whether every requested resource was found; errors that stop the
 /// command come back as `Err`.
 fn run(cli: &Cli, env: &Env, out: &mut dyn Write) -> Result<bool> {
+    let file = env.config_file();
+    let config = Config::load(file.as_deref())?;
     let connect = || -> Result<Client> {
-        let file = env.config_file();
-        let config = Config::load(file.as_deref())?;
         Ok(Client::new(config::server(
             cli.server.as_deref(),
             &config,
@@ -79,7 +98,25 @@ fn run(cli: &Cli, env: &Env, out: &mut dyn Write) -> Result<bool> {
         )?))
     };
     let cache = env.cache_dir();
+    let writer = |client| -> Result<cmd::Writer<'_>> {
+        cmd::Writer::new(
+            client,
+            Catalog::new(client, cache.as_deref()),
+            github::API,
+            env.editor.clone(),
+            config::github_token(env, &config)?,
+        )
+    };
     match &cli.command {
+        Command::Edit(args) => cmd::edit::run(out, &mut writer(&connect()?)?, args),
+        Command::Apply(args) => cmd::apply::run(out, &mut writer(&connect()?)?, args),
+        Command::Diff(args) => cmd::diff::run(out, &mut writer(&connect()?)?, args),
+        Command::Patch(args) => cmd::patch::run(out, &mut writer(&connect()?)?, args),
+        Command::Delete(args) => cmd::delete::run(out, &mut writer(&connect()?)?, args),
+        Command::Sync(args) => {
+            let token = || config::github_token(env, &config);
+            cmd::sync::run(out, &connect()?, github::API, &token, args)
+        }
         Command::Version(args) if args.client_only() => cmd::version::run(out, None, args),
         Command::Version(args) => cmd::version::run(out, Some(&connect()?), args),
         Command::Get(args) => {

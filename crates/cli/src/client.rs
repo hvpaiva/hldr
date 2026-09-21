@@ -42,6 +42,16 @@ impl Client {
         self.answer(path, request.call())
     }
 
+    /// A POST whose answer must be a success.
+    pub fn post(&self, path: &str, body: &Value) -> Result<Value> {
+        let request = self
+            .agent
+            .post(format!("{}{path}", self.base))
+            .header("Content-Type", "application/json");
+        self.answer(path, request.send(serde_json::to_string(body)?))?
+            .ok_or_else(|| anyhow!("{path}: not found on {}", self.base))
+    }
+
     fn answer(
         &self,
         path: &str,

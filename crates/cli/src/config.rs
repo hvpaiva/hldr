@@ -12,17 +12,31 @@ use serde::Deserialize;
 pub struct Config {
     /// Base URL of the private API, such as `https://apollo.<tailnet>.ts.net:8443`.
     pub server: Option<String>,
+    pub content: Option<ContentConfig>,
+}
+
+/// How to write to the content repository the server reads.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContentConfig {
+    /// A command that prints a GitHub token on stdout, run only when a
+    /// command writes, such as `[op, read, "op://Private/hldr-content/credential"]`.
+    pub token_command: Option<Vec<String>>,
 }
 
 /// The process environment the CLI reads, captured once so the rest of the
-/// code never touches global state.
-#[derive(Debug, Default, Clone)]
+/// code never touches global state. No `Debug`: it may carry a token.
+#[derive(Default, Clone)]
 pub struct Env {
     /// `HLDR_CONFIG`: a config file other than the default.
     pub config: Option<PathBuf>,
     pub xdg_config_home: Option<PathBuf>,
     pub xdg_cache_home: Option<PathBuf>,
     pub home: Option<PathBuf>,
+    /// `HLDR_GITHUB_TOKEN`, which wins over `content.token_command`.
+    pub github_token: Option<String>,
+    /// `HLDR_EDITOR`, `VISUAL` or `EDITOR`, in that order.
+    pub editor: Option<String>,
 }
 
 impl Env {
@@ -37,6 +51,12 @@ impl Env {
             xdg_config_home: path("XDG_CONFIG_HOME").filter(|p| p.is_absolute()),
             xdg_cache_home: path("XDG_CACHE_HOME").filter(|p| p.is_absolute()),
             home: path("HOME"),
+            github_token: std::env::var("HLDR_GITHUB_TOKEN")
+                .ok()
+                .filter(|token| !token.trim().is_empty()),
+            editor: ["HLDR_EDITOR", "VISUAL", "EDITOR"]
+                .iter()
+                .find_map(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty())),
         }
     }
 
@@ -74,6 +94,46 @@ impl Config {
         };
         serde_saphyr::from_str(&text).with_context(|| format!("parse {}", path.display()))
     }
+}
+
+/// The GitHub token for writes: `HLDR_GITHUB_TOKEN`, else the output of
+/// `content.token_command`. The command runs without a shell, so its
+/// arguments are never reinterpreted; its stderr reaches the terminal, where
+/// a password manager may ask to unlock.
+pub fn github_token(env: &Env, config: &Config) -> Result<Option<String>> {
+    if let Some(token) = &env.github_token {
+        return Ok(Some(token.trim().to_owned()));
+    }
+    let Some(command) = config
+        .content
+        .as_ref()
+        .and_then(|content| content.token_command.as_ref())
+    else {
+        return Ok(None);
+    };
+    let (program, args) = command
+        .split_first()
+        .context("content.token_command is empty")?;
+    let output = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .with_context(|| format!("running content.token_command ({program})"))?;
+    if !output.status.success() {
+        bail!(
+            "content.token_command ({program}) failed with {}",
+            output.status
+        );
+    }
+    let token = String::from_utf8(output.stdout)
+        .context("content.token_command printed something that is not text")?
+        .trim()
+        .to_owned();
+    if token.is_empty() {
+        bail!("content.token_command ({program}) printed nothing");
+    }
+    Ok(Some(token))
 }
 
 /// The server to talk to: `--server` (or `HLDR_SERVER`, which clap folds into
@@ -155,6 +215,7 @@ mod tests {
     fn flag_wins_over_config() {
         let config = Config {
             server: Some("https://from-file.test".to_owned()),
+            content: None,
         };
         assert_eq!(
             server(None, &config, None).unwrap(),
@@ -164,6 +225,37 @@ mod tests {
             server(Some("http://127.0.0.1:8081/"), &config, None).unwrap(),
             "http://127.0.0.1:8081"
         );
+    }
+
+    #[test]
+    fn token_comes_from_env_or_command() {
+        let command = |argv: &[&str]| Config {
+            server: None,
+            content: Some(ContentConfig {
+                token_command: Some(argv.iter().map(|a| (*a).to_owned()).collect()),
+            }),
+        };
+        assert_eq!(
+            github_token(&Env::default(), &Config::default()).unwrap(),
+            None
+        );
+        assert_eq!(
+            github_token(&Env::default(), &command(&["printf", "  tok\\n"]))
+                .unwrap()
+                .as_deref(),
+            Some("tok")
+        );
+        let env = Env {
+            github_token: Some("from-env".to_owned()),
+            ..Env::default()
+        };
+        assert_eq!(
+            github_token(&env, &command(&["false"])).unwrap().as_deref(),
+            Some("from-env")
+        );
+        assert!(github_token(&Env::default(), &command(&["false"])).is_err());
+        assert!(github_token(&Env::default(), &command(&["true"])).is_err());
+        assert!(github_token(&Env::default(), &command(&[])).is_err());
     }
 
     #[test]

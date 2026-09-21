@@ -94,6 +94,37 @@ hldr explain project.spec.status
 hldr version
 ```
 
+Writes go to the content repository the server syncs from, which the
+server reports, so the CLI can never write where the site does not read:
+
+```
+hldr edit project hldr              # $HLDR_EDITOR, $VISUAL or $EDITOR
+hldr apply -f atlas.md              # kind from the file, name from its file name
+hldr apply -f ~/dev/hldr-content    # a checkout, file by file
+hldr diff -f atlas.md               # exit 1 when applying would change something
+hldr patch site -p '{"spec":{"blog":{"enabled":true}}}'
+hldr delete project old-thing
+hldr sync                           # fetch now instead of on the next poll
+hldr sync status                    # served revision against the branch head
+```
+
+Each command validates with the parser the server indexes with, then
+commits every change at once on top of the commit it read; if the branch
+moved meanwhile, nothing is written. After committing, it asks the server
+to sync that exact commit and returns once the site shows it (`--no-sync`
+leaves it to the next poll). A failed edit reopens with the error written
+into the file, as `kubectl edit` does.
+
+Writing needs a GitHub token with Contents write access to the content
+repository only. `HLDR_GITHUB_TOKEN` holds one, or a command prints it,
+run only when something is about to be written:
+
+```yaml
+server: https://apollo.<tailnet>.ts.net:8443
+content:
+  token_command: [op, read, "op://Private/hldr-content/credential"]
+```
+
 Resource types, their short names and their table columns come from the
 server (`/api/v1/api-resources`), cached per server under
 `$XDG_CACHE_HOME/hldr/` for six hours and refreshed at once for a type the

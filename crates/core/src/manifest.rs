@@ -235,6 +235,22 @@ fn is_false(value: &bool) -> bool {
     !value
 }
 
+/// The `kind` a file declares, read before knowing where the file belongs:
+/// from the frontmatter of a markdown file, or from a YAML document.
+pub fn declared_kind(source: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Head {
+        kind: String,
+    }
+    let yaml = match split_frontmatter(Path::new(""), source) {
+        Ok((frontmatter, _)) => frontmatter,
+        Err(_) => source,
+    };
+    serde_saphyr::from_str::<Head>(yaml)
+        .ok()
+        .map(|head| head.kind)
+}
+
 /// Parses a content file. `path` is relative to the content root and decides
 /// which kind the file must declare.
 pub fn parse(path: &Path, source: &[u8]) -> Result<Manifest, Error> {
@@ -572,6 +588,14 @@ Design to platform.
             panic!("not a project");
         };
         assert!(spec.draft);
+    }
+
+    #[test]
+    fn reads_the_declared_kind() {
+        assert_eq!(declared_kind(PROJECT).as_deref(), Some("Project"));
+        assert_eq!(declared_kind(THEME).as_deref(), Some("Theme"));
+        assert_eq!(declared_kind("title: no kind\n"), None);
+        assert_eq!(declared_kind("---\nkind: [\n---\n"), None);
     }
 
     #[test]

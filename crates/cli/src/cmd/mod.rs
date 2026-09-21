@@ -1,17 +1,97 @@
 //! One module per verb.
 
 pub mod api_resources;
+pub mod apply;
+pub mod delete;
 pub mod describe;
+pub mod diff;
+pub mod edit;
 pub mod explain;
 pub mod get;
+pub mod patch;
+pub mod sync;
 pub mod version;
+#[cfg(test)]
+mod write_tests;
 
 use anyhow::{Result, bail};
+use hldr_core::api::ApiResource;
 use serde_json::json;
 
 use crate::client::Client;
+use crate::content::Target;
 use crate::discovery::Catalog;
 use crate::print::Fetched;
+
+/// Flags every writing command takes.
+#[derive(Debug, clap::Args)]
+pub struct WriteArgs {
+    /// Commit message subject, instead of one naming the change
+    #[arg(short, long)]
+    message: Option<String>,
+    /// Commit without asking the server to sync; it catches up on its next poll
+    #[arg(long)]
+    no_sync: bool,
+}
+
+impl WriteArgs {
+    pub fn message(&self, change: &str) -> String {
+        self.message
+            .clone()
+            .unwrap_or_else(|| format!("content: {change}"))
+    }
+
+    pub fn sync(&self) -> bool {
+        !self.no_sync
+    }
+}
+
+/// What the writing commands share: the API, discovery, and the repository
+/// the server reads, opened with the token when there is one. Every GitHub
+/// read goes with it: GitHub caches anonymous answers for up to a minute,
+/// so an anonymous read right after a write can see the branch before it.
+pub struct Writer<'a> {
+    pub client: &'a Client,
+    pub catalog: Catalog<'a>,
+    pub target: Target,
+    pub editor: Option<String>,
+}
+
+impl<'a> Writer<'a> {
+    pub fn new(
+        client: &'a Client,
+        catalog: Catalog<'a>,
+        api: &str,
+        editor: Option<String>,
+        token: Option<String>,
+    ) -> Result<Self> {
+        Ok(Self {
+            target: Target::discover(client, api, token)?,
+            client,
+            catalog,
+            editor,
+        })
+    }
+
+    pub fn resource(&mut self, kind: &str, verb: &str) -> Result<ApiResource> {
+        let resource = self.catalog.resolve(kind)?;
+        if !resource.verbs.iter().any(|v| v == verb) {
+            bail!("{} does not support {verb}", resource.name);
+        }
+        Ok(resource)
+    }
+
+    /// Fails before any work when there is nothing to write with.
+    pub fn authorize(&self) -> Result<()> {
+        if !self.target.github.has_token() {
+            bail!(
+                "writing needs a GitHub token: set HLDR_GITHUB_TOKEN, or `content.token_command` \
+                 in the config file"
+            );
+        }
+        Ok(())
+    }
+}
 
 /// `TYPE`, `TYPE NAME...` or `TYPE/NAME...`, grouped by type in the order
 /// the types first appear.

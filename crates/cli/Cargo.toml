@@ -12,6 +12,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = "1.3.0"
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 serde_json_path = "0.7.2"
+similar = "3.2.0"
+tempfile = "3.27.0"
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 
 [lints]
@@ -19,5 +21,4 @@ workspace = true
 
 [dev-dependencies]
 axum = "0.8.9"
-tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net"] }
