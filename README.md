@@ -2,9 +2,15 @@
 
 Site and CLI for [hvpaiva.dev](https://hvpaiva.dev).
 
-HTML in a browser. Content is markdown in git; runtime state lives in
-SQLite. Administration is a CLI in the kubectl shape; there
-is no web panel. JavaScript is not required to read the pages.
+HTML in a browser. JavaScript is not required to read the pages.
+Administration is a CLI in the kubectl shape; there is no web panel.
+
+Git is the only durable store. Content and site configuration live in
+[hldr-content](https://github.com/hvpaiva/hldr-content): prose as markdown
+under a frontmatter, configuration as YAML, every file declaring its
+`kind`. The server pulls that repository and materializes one revision of
+it into SQLite, which the site reads. Deleting the database loses nothing:
+the next sync rebuilds it.
 
 The JSON API is private. It has no authentication of its own: it listens
 apart from the site and is reachable only through the tailnet, so the CLI
@@ -20,7 +26,6 @@ production is healthy. The tag is the version; nothing is committed back.
 crates/core       domain, SQLite, markdown
 crates/server     hldr-server
 crates/cli        hldr
-content/          desired state (site, profile, projects)
 migrations/       sqlx
 config/           Kamal: deploy.yml, the target's pinned host keys
 cliff.toml        version bumps and release notes (git-cliff)
@@ -30,19 +35,34 @@ cliff.toml        version bumps and release notes (git-cliff)
 
 ```
 cargo build --workspace
-HLDR_CONTENT_DIR=content cargo run -p hldr-server
+HLDR_CONTENT_DIR=../hldr-content cargo run -p hldr-server
 ```
 
+Content comes from exactly one source:
+
+- `HLDR_CONTENT_DIR`: a checkout, read as it is on disk.
+- `HLDR_CONTENT_REPO` (`owner/name`) with `HLDR_CONTENT_REF` (default
+  `main`): the GitHub repository. Each sync resolves the ref to a commit
+  and downloads that commit's tarball, so one sync reads one revision.
+
+The server syncs on boot, then every `HLDR_CONTENT_POLL` (default `5m`;
+`0` turns polling off), and on `POST /api/v1/sync`. A revision that fails
+to index changes nothing: the previous one stays served and the error is
+recorded. A failed first sync still serves what the database holds; with
+nothing synced yet, `/readyz` answers 503.
+
 Listens on `127.0.0.1:8080`. `HLDR_ADDR` overrides. `/healthz` does not
-touch the database; `/readyz` does. Both report `version` and `revision`.
-SQLite defaults to `./hldr.db`. `HLDR_ORIGIN` sets the canonical URL and
-defaults to the local listener.
+touch the database; `/readyz` does, and adds the served content revision.
+Both report `version` and `revision`. SQLite defaults to `./hldr.db`.
+`HLDR_ORIGIN` sets the canonical URL and defaults to the local listener.
 
 The private API (`/api/v1`, and `/healthz`) listens on `127.0.0.1:8081`.
 `HLDR_API_ADDR` overrides, as `host:port` or `unix:/absolute/path`. A unix
 socket path is taken over from whatever process held it, so a new container
 can boot while the old one still serves; a non-socket file at the path is
-an error.
+an error. `GET /api/v1/sync` shows the sync state; `POST` runs a sync and
+answers once it is done: 422 when the content is invalid, 502 when it
+could not be fetched.
 
 ```
 cargo run -p hldr -- version
@@ -50,7 +70,7 @@ cargo run -p hldr -- version
 
 ```
 docker build -t hldr .
-docker run --rm -p 8080:8080 hldr
+docker run --rm -p 8080:8080 -e HLDR_CONTENT_REPO=hvpaiva/hldr-content hldr
 ```
 
 Outside the release pipeline the version is `dev`. Cargo manifests carry
@@ -68,9 +88,10 @@ cargo test --workspace
 
 `.github/workflows/deploy.yml`, on every push to `main`:
 
-1. `plan` compares the deployable inputs (`crates/`, `content/`,
-   `migrations/`, Cargo files, `Dockerfile`, `config/`, Kamal gems) with
-   the last `vX.Y.Z` tag. Nothing changed: nothing runs.
+1. `plan` compares the deployable inputs (`crates/`, `migrations/`, Cargo
+   files, `Dockerfile`, `config/`, Kamal gems) with the last `vX.Y.Z` tag.
+   Nothing changed: nothing runs. Content is not an input: it ships from
+   hldr-content through the sync, not through a release.
 2. The bump comes from Conventional Commits: `fix` patch, `feat` minor,
    `!`/`BREAKING CHANGE` major. Any other change to those inputs still
    takes a patch, so a version always names one image.

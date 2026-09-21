@@ -6,7 +6,6 @@ deny.toml
 *.db-shm
 *.db-wal
 **/*.md
-!content/**/*.md
 Gemfile
 Gemfile.lock
 config

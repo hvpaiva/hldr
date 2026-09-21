@@ -16,7 +16,7 @@
 set -u
 
 readonly deployable=(
-	crates content migrations
+	crates migrations
 	Cargo.toml Cargo.lock Dockerfile .dockerignore
 	config .kamal Gemfile Gemfile.lock
 )

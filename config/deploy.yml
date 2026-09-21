@@ -27,6 +27,7 @@ ssh:
 env:
   clear:
     HLDR_ORIGIN: https://<%= domain %>
+    HLDR_CONTENT_REPO: hvpaiva/hldr-content
     # apollo serves this socket to the tailnet at :8443, and nowhere else.
     HLDR_API_ADDR: unix:/run/tailnet/8443.sock
 

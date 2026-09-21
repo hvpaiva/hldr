@@ -31,11 +31,9 @@ RUN apt-get update \
     && chown hldr:hldr /var/lib/hldr
 
 COPY --from=builder /src/target/release/hldr-server /usr/local/bin/hldr-server
-COPY content /app/content
 
 USER 1000:1000
 ENV HLDR_ADDR=0.0.0.0:8080 \
-    HLDR_CONTENT_DIR=/app/content \
     HLDR_DATABASE=/var/lib/hldr/hldr.db \
     HLDR_LOG=info
 EXPOSE 8080
