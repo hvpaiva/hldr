@@ -41,6 +41,8 @@ pub struct Project {
     pub tags: Vec<String>,
     pub links: ProjectLinks,
     pub github_repo: Option<String>,
+    /// Markdown body exactly as written below the frontmatter.
+    pub body_source: String,
     pub body_html: String,
     pub body_text: String,
     pub created_at: String,
@@ -70,6 +72,7 @@ struct ProjectRow {
     tags: String,
     links: String,
     github_repo: Option<String>,
+    body_source: String,
     body_html: String,
     body_text: String,
     created_at: String,
@@ -117,7 +120,7 @@ impl Db {
     pub async fn projects(&self) -> Result<Vec<ProjectSummary>, Error> {
         let rows: Vec<ProjectRow> = sqlx::query_as(
             "SELECT slug, title, tagline, status, highlight, tags, links, github_repo,
-                    '' AS body_html, '' AS body_text, created_at, updated_at
+                    '' AS body_source, '' AS body_html, '' AS body_text, created_at, updated_at
              FROM projects
              ORDER BY CASE WHEN highlight IS NULL THEN 1 ELSE 0 END,
                       highlight ASC, updated_at DESC",
@@ -144,7 +147,7 @@ impl Db {
     pub async fn project(&self, slug: &str) -> Result<Option<Project>, Error> {
         let row: Option<ProjectRow> = sqlx::query_as(
             "SELECT slug, title, tagline, status, highlight, tags, links, github_repo,
-                    body_html, body_text, created_at, updated_at
+                    body_source, body_html, body_text, created_at, updated_at
              FROM projects WHERE slug = ?1",
         )
         .bind(slug)
@@ -185,6 +188,7 @@ fn project_from_row(row: ProjectRow) -> Result<Project, Error> {
         tags: serde_json::from_str(&row.tags)?,
         links: serde_json::from_str(&row.links)?,
         github_repo: row.github_repo,
+        body_source: row.body_source,
         body_html: row.body_html,
         body_text: row.body_text,
         created_at: row.created_at,
@@ -246,6 +250,7 @@ Body.
 
         let project = db.project("atlas").await.unwrap().unwrap();
         assert!(project.body_html.contains("Body"));
+        assert_eq!(project.body_source.trim(), "Body.");
         assert!(!db.blog_enabled().await.unwrap());
         assert_eq!(db.project_count().await.unwrap(), 1);
         db.ping().await.unwrap();
