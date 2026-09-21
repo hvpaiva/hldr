@@ -1,0 +1,34 @@
+---
+kind: Profile
+name: Highlander Paiva
+headline: senior platform engineer → devsecops / appsec
+bio: >
+  Senior platform engineer. I build delivery paths that are boring on
+  purpose: CI/CD, hosts you can rebuild, and security in the pipeline,
+  not taped on after. This site is a sample of that craft.
+email: contact@hvpaiva.dev
+links:
+  github: https://github.com/hvpaiva
+  linkedin: https://linkedin.com/in/hvpaiva
+  source: https://github.com/hvpaiva/hvpaiva
+---
+
+Design → front-end → back-end → full-stack → platform → DevSecOps.
+
+I build and operate developer platforms and the path into production.
+The through-line is making systems operable: pipelines that are
+boring, hosts that can be rebuilt, and interfaces that live in the
+terminal.
+
+Current focus is putting security into that path. Certifications in
+progress, in order:
+
+- Certified DevSecOps Professional (CDP), Practical DevSecOps
+- AWS Certified Security – Specialty
+- Professional Cloud Security Engineer, Google Cloud
+- Certified Cloud Security Professional (CCSP), ISC²
+
+Study also runs through TryHackMe and OWASP (Top 10, ASVS, SAMM).
+
+Stack I actually use: Rust, NixOS, containers when they earn their
+keep, GitHub Actions, and enough Kubernetes to not pretend otherwise.

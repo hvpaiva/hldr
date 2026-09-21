@@ -249,7 +249,12 @@ pub fn home(
 
 pub fn about(site: &Site, tree: &Tree<'_>, profile: &Profile, theme: &'static Theme) -> Markup {
     let mut lines = vec![html! { h1.h1 { span.mk { "# " } "about" } }, html! { p {} }];
-    lines.extend(source::markdown(profile.about_source.trim_end()));
+    lines.extend(source::markdown(
+        profile
+            .about_source
+            .trim_start_matches(['\r', '\n'])
+            .trim_end(),
+    ));
     lines.push(html! { p {} });
     lines.push(html! { h2.h2 { span.mk { "## " } "Contact" } });
     lines.extend(elsewhere(profile, false));

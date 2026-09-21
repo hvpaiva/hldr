@@ -19,6 +19,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects", get(projects))
         .route("/api/v1/projects/{slug}", get(project))
         .route("/api/v1/profile", get(profile))
+        .route("/api/v1/site", get(site))
         .route("/api/v1/posts", get(posts))
         .route("/api/v1/posts/{slug}", get(post))
         .fallback(fallback)
@@ -35,7 +36,7 @@ async fn schema() -> Json<serde_json::Map<String, serde_json::Value>> {
 }
 
 async fn projects(State(state): State<AppState>) -> Result<Response, AppError> {
-    let items = state.db.projects().await?;
+    let items = state.db.all_projects().await?;
     Ok(Json(api::project_list(&items)).into_response())
 }
 
@@ -43,7 +44,7 @@ async fn project(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> Result<Response, AppError> {
-    let Some(project) = state.db.project(&slug).await? else {
+    let Some(project) = state.db.any_project(&slug).await? else {
         return Ok(not_found(format!("project '{slug}' not found")));
     };
     Ok(Json(api::Project::from(&project)).into_response())
@@ -52,6 +53,11 @@ async fn project(
 async fn profile(State(state): State<AppState>) -> Result<Response, AppError> {
     let profile = state.db.profile().await?;
     Ok(Json(api::Profile::from(&profile)).into_response())
+}
+
+async fn site(State(state): State<AppState>) -> Result<Response, AppError> {
+    let site = state.db.site_config().await?;
+    Ok(Json(api::Site::from(&site)).into_response())
 }
 
 async fn posts(State(state): State<AppState>) -> Result<Response, AppError> {

@@ -20,7 +20,7 @@ production is healthy. The tag is the version; nothing is committed back.
 crates/core       domain, SQLite, markdown
 crates/server     hldr-server
 crates/cli        hldr
-content/          desired state (profile, projects)
+content/          desired state (site, profile, projects)
 migrations/       sqlx
 config/           Kamal: deploy.yml, the target's pinned host keys
 cliff.toml        version bumps and release notes (git-cliff)

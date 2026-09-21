@@ -78,6 +78,7 @@ async fn main() {
         .await
         .expect("failed to index content");
     tracing::info!(
+        site_updated = report.site_updated,
         profile_updated = report.profile_updated,
         projects_upserted = report.projects_upserted,
         projects_skipped = report.projects_skipped,
@@ -600,7 +601,12 @@ mod tests {
     #[tokio::test]
     async fn site_does_not_serve_the_api() {
         let (_dir, state) = state().await;
-        for path in ["/api/v1/projects", "/api/v1/schema", "/api/v1/profile"] {
+        for path in [
+            "/api/v1/projects",
+            "/api/v1/schema",
+            "/api/v1/profile",
+            "/api/v1/site",
+        ] {
             let (status, content_type, _) = call(site_router(state.clone()), path).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
             assert!(
@@ -617,7 +623,13 @@ mod tests {
         let (status, _, list) = call(api::router(state.clone()), "/api/v1/projects").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(list["kind"], "ProjectList");
-        assert_eq!(list["items"][0]["metadata"]["slug"], "hldr");
+        assert_eq!(list["items"][0]["metadata"]["name"], "hldr");
+        assert!(
+            list["items"][0]["spec"]["body"]
+                .as_str()
+                .unwrap()
+                .contains("What it is")
+        );
 
         let (status, _, project) = call(api::router(state.clone()), "/api/v1/projects/hldr").await;
         assert_eq!(status, StatusCode::OK);
@@ -627,6 +639,11 @@ mod tests {
         let (status, _, profile) = call(api::router(state.clone()), "/api/v1/profile").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(profile["kind"], "Profile");
+
+        let (status, _, site) = call(api::router(state.clone()), "/api/v1/site").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(site["kind"], "Site");
+        assert_eq!(site["spec"]["blog"]["enabled"], false);
     }
 
     #[tokio::test]
@@ -637,6 +654,10 @@ mod tests {
             call(api::router(state.clone()), "/api/v1/api-resources").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(resources["items"][0]["name"], "projects");
+        assert_eq!(
+            resources["items"][0]["source"]["path"],
+            "projects/{name}.md"
+        );
 
         let (status, _, schema) = call(api::router(state.clone()), "/api/v1/schema").await;
         assert_eq!(status, StatusCode::OK);

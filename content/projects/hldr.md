@@ -1,4 +1,5 @@
 ---
+kind: Project
 title: hldr
 tagline: Site and CLI for hvpaiva.dev.
 status: active

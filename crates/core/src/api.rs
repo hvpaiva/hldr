@@ -7,7 +7,8 @@
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{ProfileLinks, ProjectLinks, ProjectStatus};
+use crate::manifest::{Format, Kind};
+use crate::types::{AssetSpec, ProfileLinks, ProjectLinks, ProjectStatus};
 
 /// A resource as the API serves it.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -36,10 +37,13 @@ pub type Project = Resource<ProjectMetadata, ProjectSpec>;
 /// Profile as the API serves it.
 pub type Profile = Resource<ProfileMetadata, ProfileSpec>;
 
+/// Site configuration as the API serves it.
+pub type Site = Resource<SiteMetadata, SiteSpec>;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProjectMetadata {
-    /// Identifier, taken from the file name under `content/projects/`.
-    pub slug: String,
+    /// Identifier, taken from the file name under `projects/`.
+    pub name: String,
     /// When the project was first indexed, ISO-8601 UTC.
     pub created_at: String,
     /// When the project's file last changed, ISO-8601 UTC.
@@ -53,6 +57,8 @@ pub struct ProjectSpec {
     /// One line shown under the title in lists and on the home page.
     pub tagline: String,
     pub status: ProjectStatus,
+    /// Kept out of the public site while true.
+    pub draft: bool,
     /// Position among the highlights on the home page. Lower numbers come
     /// first; null leaves the project out of the highlights.
     pub highlight: Option<i64>,
@@ -61,11 +67,15 @@ pub struct ProjectSpec {
     pub links: ProjectLinks,
     /// GitHub repository as `owner/name`, the key for repository metrics.
     pub github: Option<String>,
+    /// Images attached to the project.
+    pub assets: Vec<AssetSpec>,
+    /// Markdown below the frontmatter.
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProfileMetadata {
-    /// When `profile.yaml` last changed, ISO-8601 UTC.
+    /// When `profile.md` last changed, ISO-8601 UTC.
     pub updated_at: String,
 }
 
@@ -77,11 +87,30 @@ pub struct ProfileSpec {
     pub headline: String,
     /// Paragraph that introduces the profile on the home page.
     pub bio: String,
-    /// Markdown of the about page.
-    pub about: String,
     /// Public contact address.
     pub email: Option<String>,
     pub links: ProfileLinks,
+    /// Markdown below the frontmatter: the about page.
+    pub body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SiteMetadata {
+    /// When a value in `site.yaml` last changed, ISO-8601 UTC.
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SiteSpec {
+    pub blog: BlogSpec,
+}
+
+/// The blog section of the site.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BlogSpec {
+    /// Whether the blog is listed and served.
+    pub enabled: bool,
 }
 
 /// Error body, RFC 9457 (`application/problem+json`).
@@ -104,27 +133,112 @@ pub struct ApiResource {
     pub short_names: Vec<String>,
     /// Key into the document served by [`schemas`].
     pub kind: String,
-    /// Verbs the server supports on this resource.
+    /// True when exactly one resource of this kind exists and it has no name.
+    pub singleton: bool,
+    /// Verbs the CLI supports on this resource.
     pub verbs: Vec<String>,
+    /// Where the resource lives in the content repository.
+    pub source: Source,
+    /// Columns of the table `hldr get` prints.
+    pub columns: Vec<Column>,
+}
+
+/// The file that declares a resource.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Source {
+    /// Path under the content root; `{name}` stands for the resource name.
+    pub path: String,
+    pub format: Format,
+}
+
+/// A table column, in the style of kubectl's printer columns.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Column {
+    /// Header text.
+    pub name: String,
+    /// Field shown, as a kubectl-style JSONPath such as `.spec.status`.
+    pub json_path: String,
+    /// Shown only with `-o wide`.
+    pub wide: bool,
 }
 
 const READ_VERBS: &[&str] = &["get", "describe", "explain"];
+const WRITE_VERBS: &[&str] = &["edit", "apply", "diff", "patch"];
 
 /// Resource types the server exposes, in display order.
 pub fn resources() -> List<ApiResource> {
-    let entry = |name: &str, singular: &str, short_names: &[&str], kind: &str| ApiResource {
-        name: name.to_owned(),
-        singular: singular.to_owned(),
-        short_names: short_names.iter().map(|&s| s.to_owned()).collect(),
-        kind: kind.to_owned(),
-        verbs: READ_VERBS.iter().map(|&v| v.to_owned()).collect(),
-    };
     List {
         kind: "APIResourceList".to_owned(),
         items: vec![
-            entry("projects", "project", &["proj", "p"], "Project"),
-            entry("profile", "profile", &[], "Profile"),
+            entry(
+                Kind::Project,
+                "projects",
+                &["proj", "p"],
+                &[
+                    ("NAME", ".metadata.name", false),
+                    ("STATUS", ".spec.status", false),
+                    ("HIGHLIGHT", ".spec.highlight", false),
+                    ("DRAFT", ".spec.draft", false),
+                    ("TAGLINE", ".spec.tagline", true),
+                    ("TAGS", ".spec.tags", true),
+                    ("UPDATED", ".metadata.updated_at", true),
+                ],
+            ),
+            entry(
+                Kind::Profile,
+                "profile",
+                &[],
+                &[
+                    ("NAME", ".spec.name", false),
+                    ("HEADLINE", ".spec.headline", false),
+                    ("EMAIL", ".spec.email", true),
+                    ("UPDATED", ".metadata.updated_at", true),
+                ],
+            ),
+            entry(
+                Kind::Site,
+                "site",
+                &[],
+                &[
+                    ("BLOG", ".spec.blog.enabled", false),
+                    ("UPDATED", ".metadata.updated_at", true),
+                ],
+            ),
         ],
+    }
+}
+
+fn entry(
+    kind: Kind,
+    name: &str,
+    short_names: &[&str],
+    columns: &[(&str, &str, bool)],
+) -> ApiResource {
+    let owned = |items: &[&str]| items.iter().map(|&s| s.to_owned()).collect::<Vec<_>>();
+    let mut verbs = owned(READ_VERBS);
+    verbs.extend(owned(WRITE_VERBS));
+    if !kind.is_singleton() {
+        verbs.push("delete".to_owned());
+    }
+    ApiResource {
+        name: name.to_owned(),
+        singular: kind.as_str().to_lowercase(),
+        short_names: owned(short_names),
+        kind: kind.as_str().to_owned(),
+        singleton: kind.is_singleton(),
+        verbs,
+        source: Source {
+            path: kind.path_template().to_owned(),
+            format: kind.format(),
+        },
+        columns: columns
+            .iter()
+            .map(|&(name, json_path, wide)| Column {
+                name: name.to_owned(),
+                json_path: json_path.to_owned(),
+                wide,
+            })
+            .collect(),
     }
 }
 
@@ -133,6 +247,7 @@ pub fn schemas() -> serde_json::Map<String, serde_json::Value> {
     let mut out = serde_json::Map::new();
     out.insert("Project".to_owned(), titled::<Project>("Project"));
     out.insert("Profile".to_owned(), titled::<Profile>("Profile"));
+    out.insert("Site".to_owned(), titled::<Site>("Site"));
     out
 }
 
@@ -142,47 +257,36 @@ fn titled<T: JsonSchema>(title: &str) -> serde_json::Value {
     schema.to_value()
 }
 
-// `ProjectSummary` and `Project` share these fields by name; the list and
-// the single project must serve the same spec.
-macro_rules! project_resource {
-    ($item:expr) => {
+impl From<&crate::Project> for Project {
+    fn from(item: &crate::Project) -> Self {
         Resource {
-            kind: "Project".to_owned(),
+            kind: Kind::Project.as_str().to_owned(),
             metadata: ProjectMetadata {
-                slug: $item.slug.clone(),
-                created_at: $item.created_at.clone(),
-                updated_at: $item.updated_at.clone(),
+                name: item.slug.clone(),
+                created_at: item.created_at.clone(),
+                updated_at: item.updated_at.clone(),
             },
             spec: ProjectSpec {
-                title: $item.title.clone(),
-                tagline: $item.tagline.clone(),
-                status: $item.status,
-                highlight: $item.highlight,
-                tags: $item.tags.clone(),
-                links: $item.links.clone(),
-                github: $item.github_repo.clone(),
+                title: item.title.clone(),
+                tagline: item.tagline.clone(),
+                status: item.status,
+                draft: item.draft,
+                highlight: item.highlight,
+                tags: item.tags.clone(),
+                links: item.links.clone(),
+                github: item.github_repo.clone(),
+                assets: item.assets.clone(),
+                body: item.body_source.clone(),
             },
             status: empty_status(),
         }
-    };
-}
-
-impl From<&crate::ProjectSummary> for Project {
-    fn from(item: &crate::ProjectSummary) -> Self {
-        project_resource!(item)
-    }
-}
-
-impl From<&crate::Project> for Project {
-    fn from(item: &crate::Project) -> Self {
-        project_resource!(item)
     }
 }
 
 impl From<&crate::Profile> for Profile {
     fn from(item: &crate::Profile) -> Self {
         Resource {
-            kind: "Profile".to_owned(),
+            kind: Kind::Profile.as_str().to_owned(),
             metadata: ProfileMetadata {
                 updated_at: item.updated_at.clone(),
             },
@@ -190,9 +294,26 @@ impl From<&crate::Profile> for Profile {
                 name: item.name.clone(),
                 headline: item.headline.clone(),
                 bio: item.bio.clone(),
-                about: item.about_source.clone(),
                 email: item.email.clone(),
                 links: item.links.clone(),
+                body: item.about_source.clone(),
+            },
+            status: empty_status(),
+        }
+    }
+}
+
+impl From<&crate::SiteConfig> for Site {
+    fn from(item: &crate::SiteConfig) -> Self {
+        Resource {
+            kind: Kind::Site.as_str().to_owned(),
+            metadata: SiteMetadata {
+                updated_at: item.updated_at.clone(),
+            },
+            spec: SiteSpec {
+                blog: BlogSpec {
+                    enabled: item.blog_enabled,
+                },
             },
             status: empty_status(),
         }
@@ -200,7 +321,7 @@ impl From<&crate::Profile> for Profile {
 }
 
 /// Projects as a `ProjectList`.
-pub fn project_list(items: &[crate::ProjectSummary]) -> List<Project> {
+pub fn project_list(items: &[crate::Project]) -> List<Project> {
     List {
         kind: "ProjectList".to_owned(),
         items: items.iter().map(Project::from).collect(),
@@ -243,6 +364,12 @@ mod tests {
 
         let status = field(project, &["spec", "status"]);
         assert_eq!(status["description"], "Where a project stands.");
+
+        let blog = field(&schemas["Site"], &["spec", "blog", "enabled"]);
+        assert_eq!(
+            blog["description"],
+            "Whether the blog is listed and served."
+        );
     }
 
     #[test]
@@ -256,11 +383,40 @@ mod tests {
     }
 
     #[test]
+    fn every_column_names_a_schema_field() {
+        let schemas = schemas();
+        for resource in resources().items {
+            let schema = &schemas[&resource.kind];
+            for column in &resource.columns {
+                let path: Vec<&str> = column
+                    .json_path
+                    .trim_start_matches('.')
+                    .split('.')
+                    .collect();
+                assert!(
+                    field(schema, &path).is_object(),
+                    "{}: {}",
+                    resource.kind,
+                    column.json_path
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_named_kinds_can_be_deleted() {
+        for resource in resources().items {
+            let deletable = resource.verbs.iter().any(|verb| verb == "delete");
+            assert_eq!(deletable, !resource.singleton, "{}", resource.kind);
+        }
+    }
+
+    #[test]
     fn resource_round_trips() {
         let project = Project {
             kind: "Project".to_owned(),
             metadata: ProjectMetadata {
-                slug: "atlas".to_owned(),
+                name: "atlas".to_owned(),
                 created_at: "2026-01-01T00:00:00Z".to_owned(),
                 updated_at: "2026-01-02T00:00:00Z".to_owned(),
             },
@@ -268,16 +424,20 @@ mod tests {
                 title: "Atlas".to_owned(),
                 tagline: "ADCS".to_owned(),
                 status: ProjectStatus::Wip,
+                draft: true,
                 highlight: None,
                 tags: vec!["rust".to_owned()],
                 links: ProjectLinks::default(),
                 github: None,
+                assets: Vec::new(),
+                body: "Body.\n".to_owned(),
             },
             status: empty_status(),
         };
         let json = serde_json::to_string(&project).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(back.spec.status, ProjectStatus::Wip);
-        assert_eq!(back.metadata.slug, "atlas");
+        assert!(back.spec.draft);
+        assert_eq!(back.metadata.name, "atlas");
     }
 }

@@ -3,6 +3,7 @@ use serde::Serialize;
 pub mod api;
 pub mod db;
 pub mod index;
+pub mod manifest;
 pub mod store;
 pub mod types;
 
@@ -12,7 +13,7 @@ mod markdown;
 pub use db::Db;
 pub use error::Error;
 pub use index::SyncReport;
-pub use store::{Profile, Project, ProjectSummary};
+pub use store::{Profile, Project, ProjectSummary, SiteConfig};
 
 /// Release version, stamped at build time through `HLDR_VERSION`.
 ///
