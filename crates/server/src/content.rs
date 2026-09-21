@@ -80,6 +80,14 @@ impl ContentSource {
         })
     }
 
+    /// The GitHub repository and ref, when content comes from one.
+    pub fn origin(&self) -> Option<(String, String)> {
+        match self {
+            Self::Dir(_) => None,
+            Self::GitHub { repo, git_ref, .. } => Some((repo.clone(), git_ref.clone())),
+        }
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Self::Dir(path) => format!("dir:{}", path.display()),
@@ -124,6 +132,8 @@ pub enum SyncError {
     Fetch(String),
     /// The content did not index; the previous revision stays served.
     Index(hldr_core::Error),
+    /// The branch did not reach the revision the caller expected in time.
+    Stale(String),
 }
 
 impl fmt::Display for SyncError {
@@ -131,6 +141,7 @@ impl fmt::Display for SyncError {
         match self {
             Self::Fetch(message) => write!(f, "fetch: {message}"),
             Self::Index(error) => write!(f, "index: {error}"),
+            Self::Stale(message) => write!(f, "stale: {message}"),
         }
     }
 }
@@ -139,17 +150,35 @@ impl fmt::Display for SyncError {
 /// it, then finds the content current.
 pub struct Syncer {
     source: ContentSource,
+    /// Optional read-only token: authenticated reads are never served from
+    /// GitHub's cache and get 5000 requests an hour instead of 60.
+    token: Option<String>,
     db: Db,
     running: tokio::sync::Mutex<()>,
+    /// How often and how long to wait for an expected revision.
+    patience: (Duration, Duration),
 }
 
 impl Syncer {
     pub fn new(source: ContentSource, db: Db) -> Self {
         Self {
             source,
+            token: None,
             db,
             running: tokio::sync::Mutex::new(()),
+            patience: (Duration::from_secs(3), Duration::from_secs(60)),
         }
+    }
+
+    pub fn with_token(mut self, token: Option<String>) -> Self {
+        self.token = token.filter(|token| !token.trim().is_empty());
+        self
+    }
+
+    #[cfg(test)]
+    fn with_patience(mut self, every: Duration, within: Duration) -> Self {
+        self.patience = (every, within);
+        self
     }
 
     pub fn source(&self) -> &ContentSource {
@@ -160,8 +189,23 @@ impl Syncer {
     /// when it already was; `force` indexes anyway, as on boot, where the
     /// new binary may materialize content differently.
     pub async fn sync(&self, force: bool) -> Result<Option<SyncReport>, SyncError> {
+        self.sync_to(force, None).await
+    }
+
+    /// Like [`Syncer::sync`], but first waits for the branch to point at
+    /// `expected`, the commit a client just pushed.
+    pub async fn sync_to(
+        &self,
+        force: bool,
+        expected: Option<&str>,
+    ) -> Result<Option<SyncReport>, SyncError> {
+        if let Some(sha) = expected
+            && !(sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()))
+        {
+            return Err(SyncError::Stale(format!("not a commit id: {sha:?}")));
+        }
         let _running = self.running.lock().await;
-        let outcome = self.run(force).await;
+        let outcome = self.run(force, expected).await;
         let recorded = match &outcome {
             Ok(Some((_, revision))) => self.db.record_sync(revision.as_deref()).await,
             Ok(None) => self.db.record_sync_attempt(None).await,
@@ -171,7 +215,11 @@ impl Syncer {
         outcome.map(|done| done.map(|(report, _)| report))
     }
 
-    async fn run(&self, force: bool) -> Result<Option<(SyncReport, Option<String>)>, SyncError> {
+    async fn run(
+        &self,
+        force: bool,
+        expected: Option<&str>,
+    ) -> Result<Option<(SyncReport, Option<String>)>, SyncError> {
         match &self.source {
             ContentSource::Dir(dir) => {
                 let report = hldr_core::index::sync(self.db.pool(), dir)
@@ -180,13 +228,27 @@ impl Syncer {
                 Ok(Some((report, None)))
             }
             ContentSource::GitHub { api, repo, git_ref } => {
-                let github = GitHub::new(api, repo);
-                let sha = blocking({
+                let github = GitHub::new(api, repo, self.token.clone());
+                let resolve = || {
                     let github = github.clone();
                     let git_ref = git_ref.clone();
-                    move || github.resolve(&git_ref)
-                })
-                .await?;
+                    blocking(move || github.resolve(&git_ref))
+                };
+                let mut sha = resolve().await?;
+                if let Some(expected) = expected.map(str::to_ascii_lowercase) {
+                    let (every, within) = self.patience;
+                    let deadline = tokio::time::Instant::now() + within;
+                    while sha != expected {
+                        if tokio::time::Instant::now() + every > deadline {
+                            return Err(SyncError::Stale(format!(
+                                "{git_ref} is at {sha}, not {expected}; \
+                                 the branch may have moved on, or GitHub is slow to show the push"
+                            )));
+                        }
+                        tokio::time::sleep(every).await;
+                        sha = resolve().await?;
+                    }
+                }
 
                 let state = self.db.sync_state().await.map_err(SyncError::Index)?;
                 if !force && state.synced_at.is_some() && state.revision.as_deref() == Some(&sha) {
@@ -222,10 +284,11 @@ async fn blocking<T: Send + 'static>(
 struct GitHub {
     agent: ureq::Agent,
     base: String,
+    token: Option<String>,
 }
 
 impl GitHub {
-    fn new(api: &str, repo: &str) -> Self {
+    fn new(api: &str, repo: &str, token: Option<String>) -> Self {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(HTTP_TIMEOUT))
             .user_agent(format!("hldr-server/{}", hldr_core::VERSION))
@@ -234,15 +297,31 @@ impl GitHub {
         Self {
             agent,
             base: format!("{api}/repos/{repo}"),
+            token,
+        }
+    }
+
+    fn get(&self, url: String) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+        let request = self
+            .agent
+            .get(url)
+            .header("X-GitHub-Api-Version", "2022-11-28");
+        match &self.token {
+            Some(token) => request.header("Authorization", format!("Bearer {token}")),
+            None => request,
         }
     }
 
     /// The commit a branch or tag points at, so one sync reads one revision
-    /// even if the branch moves meanwhile.
+    /// even if the branch moves meanwhile. Anonymous answers are cached by
+    /// GitHub's CDN for up to a minute; a query parameter it has not seen
+    /// makes it ask the origin, so a push shows at once.
     fn resolve(&self, git_ref: &str) -> Result<String, String> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
         let sha = self
-            .agent
-            .get(format!("{}/commits/{git_ref}", self.base))
+            .get(format!("{}/commits/{git_ref}?fresh={nonce}", self.base))
             .header("Accept", "application/vnd.github.sha")
             .call()
             .map_err(|err| format!("resolve {git_ref}: {err}"))?
@@ -261,7 +340,6 @@ impl GitHub {
 
     fn download(&self, sha: &str, dest: &Path) -> Result<(), String> {
         let reader = self
-            .agent
             .get(format!("{}/tarball/{sha}", self.base))
             .call()
             .map_err(|err| format!("download {sha}: {err}"))?
@@ -591,5 +669,52 @@ mod tests {
         }
         assert_eq!(indexed, 1);
         assert_eq!(stub.downloads(), 1);
+    }
+
+    #[tokio::test]
+    async fn waits_for_the_revision_a_client_pushed() {
+        let old = "d".repeat(40);
+        let new = "e".repeat(40);
+        let stub = github_stub::Stub::default();
+        stub.point_at(Some(&old));
+        let api = stub.serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path().join("hldr.db")).await.unwrap();
+        let syncer = std::sync::Arc::new(
+            Syncer::new(
+                ContentSource::github(&api, "o/r", "main").unwrap(),
+                db.clone(),
+            )
+            .with_patience(Duration::from_millis(20), Duration::from_secs(5)),
+        );
+        syncer.sync(true).await.unwrap();
+
+        let waiting = {
+            let syncer = std::sync::Arc::clone(&syncer);
+            let new = new.clone();
+            tokio::spawn(async move { syncer.sync_to(false, Some(&new)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stub.point_at(Some(&new));
+        assert!(waiting.await.unwrap().unwrap().is_some());
+        assert_eq!(db.sync_state().await.unwrap().revision, Some(new));
+    }
+
+    #[tokio::test]
+    async fn gives_up_on_a_revision_that_never_arrives() {
+        let stub = github_stub::Stub::default();
+        stub.point_at(Some(&"d".repeat(40)));
+        let api = stub.serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path().join("hldr.db")).await.unwrap();
+        let syncer = Syncer::new(ContentSource::github(&api, "o/r", "main").unwrap(), db)
+            .with_patience(Duration::from_millis(10), Duration::from_millis(50));
+        let err = syncer
+            .sync_to(false, Some(&"f".repeat(40)))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SyncError::Stale(_)), "{err}");
+        let err = syncer.sync_to(false, Some("nope")).await.unwrap_err();
+        assert!(err.to_string().contains("not a commit id"), "{err}");
     }
 }

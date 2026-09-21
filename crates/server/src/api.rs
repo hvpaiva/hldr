@@ -105,9 +105,14 @@ async fn sync_status(State(state): State<AppState>) -> Result<Response, ApiError
 
 /// Brings the served content to the source's current revision and answers
 /// once it is, or with the reason it could not be.
-async fn sync(State(state): State<AppState>) -> Result<Response, ApiError> {
-    match state.syncer.sync(false).await {
+async fn sync(
+    State(state): State<AppState>,
+    request: Option<Json<api::SyncRequest>>,
+) -> Result<Response, ApiError> {
+    let expected = request.and_then(|Json(request)| request.revision);
+    match state.syncer.sync_to(false, expected.as_deref()).await {
         Ok(report) => Ok(Json(status(&state, report).await?).into_response()),
+        Err(SyncError::Stale(message)) => Ok(problem(StatusCode::CONFLICT, "Conflict", message)),
         Err(SyncError::Fetch(message)) => Ok(problem(
             StatusCode::BAD_GATEWAY,
             "Bad Gateway",
@@ -131,6 +136,7 @@ async fn status(
     let sync = state.db.sync_state().await?;
     Ok(api::SyncStatus::new(
         state.syncer.source().describe(),
+        state.syncer.source().origin(),
         sync,
         report,
     ))

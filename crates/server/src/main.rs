@@ -78,7 +78,10 @@ async fn main() {
     let poll = content::poll_interval().unwrap_or_else(|err| panic!("{err}"));
 
     let db = Db::open(&db_path).await.expect("failed to open database");
-    let syncer = Arc::new(content::Syncer::new(source, db.clone()));
+    let syncer = Arc::new(
+        content::Syncer::new(source, db.clone())
+            .with_token(std::env::var("HLDR_GITHUB_TOKEN").ok()),
+    );
     // A failed first sync still serves whatever revision the database holds;
     // with none, /readyz stays unready and the deploy never takes traffic.
     match syncer.sync(true).await {
@@ -745,6 +748,16 @@ mod tests {
         let (status, _, sync) = post(api::router(state.clone()), "/api/v1/sync").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(sync["report"]["projects_skipped"], 2);
+        assert!(sync["repository"].is_null());
+
+        let request = Request::post("/api/v1/sync")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"revision":"nope"}"#))
+            .unwrap();
+        let (status, content_type, body) = send(api::router(state.clone()), request).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(content_type, "application/problem+json");
+        assert!(body["detail"].as_str().unwrap().contains("not a commit id"));
     }
 
     #[tokio::test]

@@ -171,6 +171,13 @@ pub struct SyncStatus {
     pub kind: String,
     /// Where content comes from, such as `github.com/hvpaiva/hldr-content@main`.
     pub source: String,
+    /// GitHub repository as `owner/name`; null for content read from a
+    /// directory. Where `hldr` writes.
+    #[serde(default)]
+    pub repository: Option<String>,
+    /// Branch or tag the server follows in `repository`.
+    #[serde(default)]
+    pub branch: Option<String>,
     /// Content commit being served; null for content read from a directory.
     pub revision: Option<String>,
     /// When the served content was materialized, ISO-8601 UTC.
@@ -187,10 +194,18 @@ pub struct SyncStatus {
 
 #[cfg(feature = "store")]
 impl SyncStatus {
-    pub fn new(source: String, state: crate::SyncState, report: Option<SyncReport>) -> Self {
+    pub fn new(
+        source: String,
+        origin: Option<(String, String)>,
+        state: crate::SyncState,
+        report: Option<SyncReport>,
+    ) -> Self {
+        let (repository, branch) = origin.unzip();
         Self {
             kind: "SyncStatus".to_owned(),
             source,
+            repository,
+            branch,
             revision: state.revision,
             synced_at: state.synced_at,
             last_attempt_at: state.last_attempt_at,
@@ -198,6 +213,17 @@ impl SyncStatus {
             report,
         }
     }
+}
+
+/// Body of `POST /api/v1/sync`. Empty, it syncs whatever the branch points
+/// at; with a revision, it waits for the branch to point there first, since
+/// GitHub can serve a stale ref for a few seconds after a push.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SyncRequest {
+    /// Commit the caller just pushed, as 40 hex digits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
