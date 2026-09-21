@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
@@ -13,6 +14,7 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 mod api;
+mod content;
 mod html;
 mod listen;
 mod source;
@@ -29,6 +31,7 @@ const FAVICON_ICO: &[u8] = include_bytes!("../assets/favicon.ico");
 struct AppState {
     db: Db,
     site: Site,
+    syncer: Arc<content::Syncer>,
 }
 
 #[derive(Clone)]
@@ -71,26 +74,34 @@ async fn main() {
         .expect("HLDR_API_ADDR must be host:port or unix:/path");
 
     let db_path = database_path();
-    let content_dir = content_dir();
+    let source = content::ContentSource::from_env().unwrap_or_else(|err| panic!("{err}"));
+    let poll = content::poll_interval().unwrap_or_else(|err| panic!("{err}"));
 
     let db = Db::open(&db_path).await.expect("failed to open database");
-    let report = hldr_core::index::sync(db.pool(), &content_dir)
-        .await
-        .expect("failed to index content");
-    tracing::info!(
-        site_updated = report.site_updated,
-        profile_updated = report.profile_updated,
-        projects_upserted = report.projects_upserted,
-        projects_skipped = report.projects_skipped,
-        projects_deleted = report.projects_deleted,
-        db = %db_path.display(),
-        content = %content_dir.display(),
-        "content indexed"
-    );
+    let syncer = Arc::new(content::Syncer::new(source, db.clone()));
+    // A failed first sync still serves whatever revision the database holds;
+    // with none, /readyz stays unready and the deploy never takes traffic.
+    match syncer.sync(true).await {
+        Ok(report) => tracing::info!(
+            source = %syncer.source().describe(),
+            db = %db_path.display(),
+            report = ?report,
+            "content synced"
+        ),
+        Err(error) => tracing::error!(
+            source = %syncer.source().describe(),
+            %error,
+            "content sync failed"
+        ),
+    }
+    if let Some(every) = poll {
+        tokio::spawn(poll_content(Arc::clone(&syncer), every));
+    }
 
     let state = AppState {
         db,
         site: Site::from_env(),
+        syncer,
     };
     let site = site_router(state.clone());
     let private = api::router(state);
@@ -230,32 +241,41 @@ fn database_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("hldr.db"))
 }
 
-fn content_dir() -> PathBuf {
-    std::env::var("HLDR_CONTENT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("content"))
-}
-
-async fn healthz() -> Json<Health> {
-    Json(Health::ok())
-}
-
-async fn readyz(State(state): State<AppState>) -> Response {
-    match state.db.ping().await {
-        Ok(()) => Json(Health::ok()).into_response(),
-        Err(error) => {
-            tracing::error!(%error, "readyz failed");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({
-                    "status": "unready",
-                    "version": hldr_core::VERSION,
-                    "revision": hldr_core::REVISION,
-                })),
-            )
-                .into_response()
+async fn poll_content(syncer: Arc<content::Syncer>, every: std::time::Duration) {
+    let mut ticker = tokio::time::interval(every);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        match syncer.sync(false).await {
+            Ok(Some(report)) => tracing::info!(report = ?report, "content synced"),
+            Ok(None) => tracing::debug!("content current"),
+            Err(error) => tracing::warn!(%error, "content sync failed"),
         }
     }
+}
+
+/// Liveness: never touches the database.
+async fn healthz() -> Json<Health> {
+    Json(Health::ok(None))
+}
+
+/// Ready once the database holds some synced revision of the content.
+async fn readyz(State(state): State<AppState>) -> Response {
+    let synced = async {
+        state.db.ping().await?;
+        state.db.sync_state().await
+    };
+    match synced.await {
+        Ok(sync) if sync.synced_at.is_some() => Json(Health::ok(sync.revision)).into_response(),
+        Ok(_) => unready("content never synced"),
+        Err(error) => unready(&error.to_string()),
+    }
+}
+
+fn unready(reason: &str) -> Response {
+    tracing::error!(reason, "readyz failed");
+    (StatusCode::SERVICE_UNAVAILABLE, Json(Health::unready(None))).into_response()
 }
 
 async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
@@ -570,23 +590,64 @@ mod tests {
 
     use super::*;
 
-    async fn state() -> (tempfile::TempDir, AppState) {
+    fn fixtures() -> PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/content")
+    }
+
+    /// State over a content directory, synced unless `synced` is false.
+    async fn state_over(content: PathBuf, synced: bool) -> (tempfile::TempDir, AppState) {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path().join("hldr.db")).await.unwrap();
-        let content = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-        hldr_core::index::sync(db.pool(), &content).await.unwrap();
+        let syncer = Arc::new(content::Syncer::new(
+            content::ContentSource::Dir(content),
+            db.clone(),
+        ));
+        if synced {
+            syncer.sync(true).await.unwrap();
+        }
         let site = Site {
             origin: "https://example.test".to_owned(),
             host: "example.test".to_owned(),
         };
-        (dir, AppState { db, site })
+        (dir, AppState { db, site, syncer })
+    }
+
+    async fn state() -> (tempfile::TempDir, AppState) {
+        state_over(fixtures(), true).await
+    }
+
+    /// A writable copy of the fixtures, for tests that change content.
+    fn fixture_copy() -> tempfile::TempDir {
+        fn copy(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy(&entry.path(), &target);
+                } else {
+                    std::fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        copy(&fixtures(), dir.path());
+        dir
     }
 
     async fn call(router: Router, path: &str) -> (StatusCode, String, serde_json::Value) {
-        let response = router
-            .oneshot(Request::get(path).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        send(router, Request::get(path).body(Body::empty()).unwrap()).await
+    }
+
+    async fn post(router: Router, path: &str) -> (StatusCode, String, serde_json::Value) {
+        send(router, Request::post(path).body(Body::empty()).unwrap()).await
+    }
+
+    async fn send(
+        router: Router,
+        request: Request<Body>,
+    ) -> (StatusCode, String, serde_json::Value) {
+        let response = router.oneshot(request).await.unwrap();
         let status = response.status();
         let content_type = response
             .headers()
@@ -623,7 +684,7 @@ mod tests {
         let (status, _, list) = call(api::router(state.clone()), "/api/v1/projects").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(list["kind"], "ProjectList");
-        assert_eq!(list["items"][0]["metadata"]["name"], "hldr");
+        assert_eq!(list["items"][0]["metadata"]["name"], "atlas");
         assert!(
             list["items"][0]["spec"]["body"]
                 .as_str()
@@ -631,7 +692,7 @@ mod tests {
                 .contains("What it is")
         );
 
-        let (status, _, project) = call(api::router(state.clone()), "/api/v1/projects/hldr").await;
+        let (status, _, project) = call(api::router(state.clone()), "/api/v1/projects/atlas").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(project["kind"], "Project");
         assert_eq!(project["spec"]["highlight"], 1);
@@ -644,6 +705,113 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(site["kind"], "Site");
         assert_eq!(site["spec"]["blog"]["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn drafts_reach_the_api_but_not_the_site() {
+        let (_dir, state) = state().await;
+
+        let (_, _, list) = call(api::router(state.clone()), "/api/v1/projects").await;
+        let names: Vec<&str> = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["metadata"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["atlas", "sketch"]);
+
+        let (status, _, draft) = call(api::router(state.clone()), "/api/v1/projects/sketch").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(draft["spec"]["draft"], true);
+
+        let (status, _, _) = call(site_router(state.clone()), "/projects/sketch").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        for path in ["/", "/projects", "/sitemap.xml"] {
+            let response = site_router(state.clone())
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let page = String::from_utf8_lossy(&bytes);
+            assert!(page.contains("atlas"), "{path}");
+            assert!(!page.contains("sketch"), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn private_api_reports_and_runs_syncs() {
+        let (_dir, state) = state().await;
+
+        let (status, _, sync) = call(api::router(state.clone()), "/api/v1/sync").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(sync["kind"], "SyncStatus");
+        assert!(sync["source"].as_str().unwrap().starts_with("dir:"));
+        assert!(sync["synced_at"].is_string());
+        assert!(sync["revision"].is_null());
+        assert!(sync.get("report").is_none());
+
+        let (status, _, sync) = post(api::router(state.clone()), "/api/v1/sync").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(sync["report"]["projects_skipped"], 2);
+    }
+
+    #[tokio::test]
+    async fn invalid_content_keeps_the_previous_revision() {
+        let content = fixture_copy();
+        let (_dir, state) = state_over(content.path().to_owned(), true).await;
+        std::fs::write(
+            content.path().join("projects/atlas.md"),
+            "---
+kind: Site
+---
+",
+        )
+        .unwrap();
+
+        let (status, content_type, body) = post(api::router(state.clone()), "/api/v1/sync").await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(content_type, "application/problem+json");
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap()
+                .contains("projects/atlas.md"),
+            "{body}"
+        );
+
+        let (_, _, project) = call(api::router(state.clone()), "/api/v1/projects/atlas").await;
+        assert_eq!(project["spec"]["title"], "Atlas");
+        let (_, _, sync) = call(api::router(state.clone()), "/api/v1/sync").await;
+        assert!(
+            sync["last_error"]
+                .as_str()
+                .unwrap()
+                .contains("projects/atlas.md")
+        );
+    }
+
+    #[tokio::test]
+    async fn ready_only_once_content_is_synced() {
+        let (_dir, state) = state_over(fixtures(), false).await;
+        let (status, _, body) = call(site_router(state.clone()), "/readyz").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["status"], "unready");
+
+        state.syncer.sync(true).await.unwrap();
+        let (status, _, body) = call(site_router(state.clone()), "/readyz").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn api_failures_are_problems() {
+        let (_dir, state) = state().await;
+        state.db.pool().close().await;
+        let (status, content_type, body) =
+            call(api::router(state.clone()), "/api/v1/projects").await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(content_type, "application/problem+json");
+        assert_eq!(body["detail"], "internal error");
     }
 
     #[tokio::test]

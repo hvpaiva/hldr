@@ -1,0 +1,3 @@
+kind: Site
+blog:
+  enabled: false

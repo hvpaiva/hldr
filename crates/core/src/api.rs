@@ -113,6 +113,41 @@ pub struct BlogSpec {
     pub enabled: bool,
 }
 
+/// State of the content sync, as `hldr sync status` shows it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SyncStatus {
+    /// Always `SyncStatus`.
+    pub kind: String,
+    /// Where content comes from, such as `github.com/hvpaiva/hldr-content@main`.
+    pub source: String,
+    /// Content commit being served; null for content read from a directory.
+    pub revision: Option<String>,
+    /// When the served content was materialized, ISO-8601 UTC.
+    pub synced_at: Option<String>,
+    /// When a sync last ran, successful or not, ISO-8601 UTC.
+    pub last_attempt_at: Option<String>,
+    /// Why the last attempt failed; null when it succeeded.
+    pub last_error: Option<String>,
+    /// What this sync changed. Present only on the response to a sync that
+    /// indexed content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<crate::SyncReport>,
+}
+
+impl SyncStatus {
+    pub fn new(source: String, state: crate::SyncState, report: Option<crate::SyncReport>) -> Self {
+        Self {
+            kind: "SyncStatus".to_owned(),
+            source,
+            revision: state.revision,
+            synced_at: state.synced_at,
+            last_attempt_at: state.last_attempt_at,
+            last_error: state.last_error,
+            report,
+        }
+    }
+}
+
 /// Error body, RFC 9457 (`application/problem+json`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Problem {

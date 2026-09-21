@@ -70,6 +70,15 @@ pub struct SiteConfig {
     pub updated_at: String,
 }
 
+/// Which content revision the database materializes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, FromRow)]
+pub struct SyncState {
+    pub revision: Option<String>,
+    pub synced_at: Option<String>,
+    pub last_attempt_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
 #[derive(FromRow)]
 struct ProfileRow {
     name: String,
@@ -235,11 +244,59 @@ impl Db {
         Ok(out)
     }
 
+    pub async fn sync_state(&self) -> Result<SyncState, Error> {
+        let state: Option<SyncState> = sqlx::query_as(
+            "SELECT revision, synced_at, last_attempt_at, last_error FROM sync_state WHERE id = 1",
+        )
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(state.unwrap_or_default())
+    }
+
+    /// Records a sync that materialized `revision`; `None` for content read
+    /// from a directory, which has no revision.
+    pub async fn record_sync(&self, revision: Option<&str>) -> Result<(), Error> {
+        sqlx::query(
+            "INSERT INTO sync_state (id, revision, synced_at, last_attempt_at, last_error)
+             VALUES (1, ?1, ?2, ?2, NULL)
+             ON CONFLICT(id) DO UPDATE SET
+                revision = excluded.revision,
+                synced_at = excluded.synced_at,
+                last_attempt_at = excluded.last_attempt_at,
+                last_error = NULL",
+        )
+        .bind(revision)
+        .bind(now_rfc3339())
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Records an attempt that changed nothing: `error` says why it failed,
+    /// `None` means the content was already current.
+    pub async fn record_sync_attempt(&self, error: Option<&str>) -> Result<(), Error> {
+        sqlx::query(
+            "INSERT INTO sync_state (id, last_attempt_at, last_error) VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+                last_attempt_at = excluded.last_attempt_at,
+                last_error = excluded.last_error",
+        )
+        .bind(now_rfc3339())
+        .bind(error)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
     pub async fn project_count(&self) -> Result<i64, Error> {
         Ok(sqlx::query_scalar("SELECT COUNT(*) FROM projects")
             .fetch_one(self.pool())
             .await?)
     }
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn summary_from_row(row: ProjectRow) -> Result<ProjectSummary, Error> {
@@ -371,5 +428,26 @@ Body.
         assert_eq!(all[0].assets.len(), 1);
         assert_eq!(all[1].slug, "hidden");
         assert!(all[1].assets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tracks_sync_state() {
+        let (_dir, db) = seeded().await;
+        assert_eq!(db.sync_state().await.unwrap(), SyncState::default());
+
+        db.record_sync(Some("abc")).await.unwrap();
+        let synced = db.sync_state().await.unwrap();
+        assert_eq!(synced.revision.as_deref(), Some("abc"));
+        assert!(synced.synced_at.is_some());
+        assert!(synced.last_error.is_none());
+
+        db.record_sync_attempt(Some("fetch failed")).await.unwrap();
+        let failed = db.sync_state().await.unwrap();
+        assert_eq!(failed.revision.as_deref(), Some("abc"));
+        assert_eq!(failed.synced_at, synced.synced_at);
+        assert_eq!(failed.last_error.as_deref(), Some("fetch failed"));
+
+        db.record_sync_attempt(None).await.unwrap();
+        assert!(db.sync_state().await.unwrap().last_error.is_none());
     }
 }

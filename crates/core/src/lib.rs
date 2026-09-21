@@ -13,7 +13,7 @@ mod markdown;
 pub use db::Db;
 pub use error::Error;
 pub use index::SyncReport;
-pub use store::{Profile, Project, ProjectSummary, SiteConfig};
+pub use store::{Profile, Project, ProjectSummary, SiteConfig, SyncState};
 
 /// Release version, stamped at build time through `HLDR_VERSION`.
 ///
@@ -30,19 +30,33 @@ pub const REVISION: &str = match option_env!("HLDR_REVISION") {
     None => "unknown",
 };
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Health {
     pub status: &'static str,
     pub version: &'static str,
     pub revision: &'static str,
+    /// Content commit the database materializes, as `/readyz` reports it;
+    /// absent from `/healthz`, for content read from a directory, and before
+    /// the first sync.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_revision: Option<String>,
 }
 
 impl Health {
-    pub fn ok() -> Self {
+    pub fn ok(content_revision: Option<String>) -> Self {
+        Self::new("ok", content_revision)
+    }
+
+    pub fn unready(content_revision: Option<String>) -> Self {
+        Self::new("unready", content_revision)
+    }
+
+    fn new(status: &'static str, content_revision: Option<String>) -> Self {
         Self {
-            status: "ok",
+            status,
             version: VERSION,
             revision: REVISION,
+            content_revision,
         }
     }
 }

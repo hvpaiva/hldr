@@ -1,0 +1,14 @@
+---
+kind: Profile
+name: Test Author
+headline: fixture profile
+bio: >
+  Writes the fixtures the server tests read.
+email: author@example.test
+links:
+  github: https://github.com/example
+---
+
+First line of the about page.
+
+More about the author.

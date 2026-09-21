@@ -22,6 +22,10 @@ allow = [
     "Zlib",
 ]
 confidence-threshold = 0.8
+exceptions = [
+    # Mozilla's root certificates, bundled so TLS does not depend on the image's trust store.
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+]
 
 [bans]
 multiple-versions = "allow"
