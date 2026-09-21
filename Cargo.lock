@@ -782,7 +782,7 @@ dependencies = [
 
 [[package]]
 name = "hldr"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "clap",
  "hldr-core",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "hldr-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "comrak",
@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "hldr-server"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "axum",
  "hldr-core",
