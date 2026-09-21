@@ -608,20 +608,24 @@ impl Theme {
         &THEMES[(i + 1) % THEMES.len()]
     }
 
-    pub fn preview_style(self) -> String {
+    /// The palette as `--t-*` custom properties. Scoped with a prefix so
+    /// carrying them on an element does not recolour that element; the
+    /// colorscheme preview copies them onto `:root`.
+    pub fn vars(self) -> String {
         format!(
-            "--bg:{bg};--fg:{fg};--fg-dim:{dim};--fg-muted:{muted};--accent:{accent};--accent-dim:{accent}18;--accent2:{a2};--highlight:{hi};--special:{sp};--teal:{teal};--error:{err};--border:{border};background:{bg};color:{fg};border-color:{accent}",
-            bg = self.bg,
-            fg = self.fg,
-            dim = self.fg_dim,
-            muted = self.fg_muted,
-            accent = self.accent,
-            a2 = self.accent2,
-            hi = self.highlight,
-            sp = self.special,
-            teal = self.teal,
-            err = self.error,
-            border = self.border
+            "--t-bg:{};--t-fg:{};--t-fg-dim:{};--t-fg-muted:{};--t-accent:{};--t-accent2:{};--t-highlight:{};--t-special:{};--t-teal:{};--t-error:{};--t-border:{};--t-scheme:{}",
+            self.bg,
+            self.fg,
+            self.fg_dim,
+            self.fg_muted,
+            self.accent,
+            self.accent2,
+            self.highlight,
+            self.special,
+            self.teal,
+            self.error,
+            self.border,
+            self.color_scheme()
         )
     }
 
@@ -759,6 +763,16 @@ mod tests {
         assert!(css.contains("--bg:#05182e"));
         assert!(css.contains("--accent:#faa968"));
         assert!(css.contains("color-scheme:dark"));
+    }
+
+    #[test]
+    fn vars_are_prefixed_and_complete() {
+        let vars = Theme::fallback().vars();
+        assert!(vars.starts_with("--t-bg:#05182e;"));
+        assert!(vars.contains("--t-accent:#faa968"));
+        assert!(vars.ends_with("--t-scheme:dark"));
+        assert_eq!(vars.matches("--t-").count(), 12);
+        assert!(!vars.contains(";--bg"));
     }
 
     #[test]

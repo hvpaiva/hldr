@@ -15,12 +15,14 @@ use tracing_subscriber::EnvFilter;
 mod api;
 mod html;
 mod negotiate;
+mod source;
 mod text;
 mod theme;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8080";
 const STYLE: &str = include_str!("../assets/style.css");
 const KEYS_JS: &str = include_str!("../assets/keys.js");
+const VIM_JS: &str = include_str!("../assets/vim.js");
 const FAVICON_ICO: &[u8] = include_bytes!("../assets/favicon.ico");
 
 #[derive(Clone)]
@@ -107,6 +109,8 @@ fn router(state: AppState) -> Router {
         .route("/projects/{slug}", get(project))
         .route("/about", get(about))
         .route("/about.txt", get(about_txt))
+        .route("/profile", get(profile_page))
+        .route("/help", get(help_page))
         .route("/blog", get(blog))
         .route("/blog/{slug}", get(blog_post))
         .route("/healthz", get(healthz))
@@ -116,6 +120,7 @@ fn router(state: AppState) -> Router {
         .route("/theme/{slug}", get(set_theme))
         .route("/style.css", get(style_sheet))
         .route("/keys.js", get(keys_js))
+        .route("/vim.js", get(vim_js))
         .route("/favicon.svg", get(favicon))
         .route("/favicon.ico", get(favicon_ico))
         .route("/sitemap.xml", get(sitemap))
@@ -261,21 +266,24 @@ async fn project(
         )
         .await);
     };
-    let count = state.db.project_count().await?;
     if negotiate::wants_text(&headers, force_txt) {
-        Ok(plain(text::project_page(
+        return Ok(plain(text::project_page(
             &state.site,
             &project,
             negotiate::wants_color(&headers, force_txt),
-        )))
-    } else {
-        Ok(html_page(html::project_page(
-            &state.site,
-            &project,
-            count,
-            theme::Theme::from_headers(&headers),
-        )))
+        )));
     }
+    let (projects, blog_enabled) = tree_data(&state).await?;
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    Ok(html_page(html::project_page(
+        &state.site,
+        &tree,
+        &project,
+        theme::Theme::from_headers(&headers),
+    )))
 }
 
 async fn blog(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
@@ -333,7 +341,7 @@ async fn sitemap(State(state): State<AppState>) -> Result<impl IntoResponse, App
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n",
     );
-    for path in ["/", "/projects", "/about"] {
+    for path in ["/", "/projects", "/about", "/profile", "/help"] {
         body.push_str(&format!(
             "  <url><loc>{}{path}</loc></url>\n",
             state.site.origin
@@ -367,6 +375,73 @@ async fn style_sheet() -> impl IntoResponse {
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
         STYLE,
+    )
+}
+
+async fn profile_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    if negotiate::wants_text(&headers, false) {
+        return Ok(browser_only(&state, &headers, "/profile").await);
+    }
+    let profile = state.db.profile().await?;
+    let (projects, blog_enabled) = tree_data(&state).await?;
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    Ok(html_page(html::profile(
+        &state.site,
+        &tree,
+        &profile,
+        theme::Theme::from_headers(&headers),
+    )))
+}
+
+async fn help_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    if negotiate::wants_text(&headers, false) {
+        return Ok(browser_only(&state, &headers, "/help").await);
+    }
+    let (projects, blog_enabled) = tree_data(&state).await?;
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    Ok(html_page(html::help(
+        &state.site,
+        &tree,
+        theme::Theme::from_headers(&headers),
+    )))
+}
+
+/// Pages that only exist as HTML answer terminals with the text 404,
+/// until the curl view renders them as files (#28).
+async fn browser_only(state: &AppState, headers: &HeaderMap, path: &str) -> Response {
+    render_not_found(
+        state,
+        headers,
+        path,
+        true,
+        "this file only opens in a browser for now.",
+    )
+    .await
+}
+
+async fn tree_data(state: &AppState) -> Result<(Vec<hldr_core::ProjectSummary>, bool), AppError> {
+    Ok((state.db.projects().await?, state.db.blog_enabled().await?))
+}
+
+async fn vim_js() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        VIM_JS,
     )
 }
 
@@ -422,24 +497,27 @@ async fn render_home(
     force_txt: bool,
 ) -> Result<Response, AppError> {
     let profile = state.db.profile().await?;
-    let projects = state.db.highlighted_projects().await?;
-    let count = state.db.project_count().await?;
+    let highlighted = state.db.highlighted_projects().await?;
     if negotiate::wants_text(&headers, force_txt) {
-        Ok(plain(text::home(
+        return Ok(plain(text::home(
             &state.site,
             &profile,
-            &projects,
+            &highlighted,
             negotiate::wants_color(&headers, force_txt),
-        )))
-    } else {
-        Ok(html_page(html::home(
-            &state.site,
-            &profile,
-            &projects,
-            count,
-            theme::Theme::from_headers(&headers),
-        )))
+        )));
     }
+    let (projects, blog_enabled) = tree_data(&state).await?;
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    Ok(html_page(html::home(
+        &state.site,
+        &tree,
+        &profile,
+        &highlighted,
+        theme::Theme::from_headers(&headers),
+    )))
 }
 
 async fn render_projects(
@@ -447,23 +525,24 @@ async fn render_projects(
     headers: HeaderMap,
     force_txt: bool,
 ) -> Result<Response, AppError> {
-    let projects = state.db.projects().await?;
-    let count = state.db.project_count().await?;
+    let (projects, blog_enabled) = tree_data(&state).await?;
     if negotiate::wants_text(&headers, force_txt) {
-        Ok(plain(text::projects_index(
+        return Ok(plain(text::projects_index(
             &state.site,
             &projects,
             negotiate::wants_color(&headers, force_txt),
-        )))
-    } else {
-        Ok(html_page(html::projects_index(
-            &state.site,
-            &projects,
-            count,
-            "Work worth opening. Context lives on the project page, not the README.",
-            theme::Theme::from_headers(&headers),
-        )))
+        )));
     }
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    Ok(html_page(html::projects_index(
+        &state.site,
+        &tree,
+        "Work worth opening. Context lives on the project page, not the README.",
+        theme::Theme::from_headers(&headers),
+    )))
 }
 
 async fn render_about(
@@ -472,21 +551,24 @@ async fn render_about(
     force_txt: bool,
 ) -> Result<Response, AppError> {
     let profile = state.db.profile().await?;
-    let count = state.db.project_count().await?;
     if negotiate::wants_text(&headers, force_txt) {
-        Ok(plain(text::about(
+        return Ok(plain(text::about(
             &state.site,
             &profile,
             negotiate::wants_color(&headers, force_txt),
-        )))
-    } else {
-        Ok(html_page(html::about(
-            &state.site,
-            &profile,
-            count,
-            theme::Theme::from_headers(&headers),
-        )))
+        )));
     }
+    let (projects, blog_enabled) = tree_data(&state).await?;
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    Ok(html_page(html::about(
+        &state.site,
+        &tree,
+        &profile,
+        theme::Theme::from_headers(&headers),
+    )))
 }
 
 async fn render_themes(
@@ -495,24 +577,19 @@ async fn render_themes(
     force_txt: bool,
 ) -> Result<Response, AppError> {
     let theme = theme::Theme::from_headers(&headers);
-    let profile = state.db.profile().await?;
-    let projects = state.db.highlighted_projects().await?;
-    let count = state.db.project_count().await?;
     if negotiate::wants_text(&headers, force_txt) {
-        Ok(plain(text::themes_index(
+        return Ok(plain(text::themes_index(
             &state.site,
             theme,
             negotiate::wants_color(&headers, force_txt),
-        )))
-    } else {
-        Ok(html_page(html::themes_index(
-            &state.site,
-            &profile,
-            &projects,
-            count,
-            theme,
-        )))
+        )));
     }
+    let (projects, blog_enabled) = tree_data(&state).await?;
+    let tree = html::Tree {
+        projects: &projects,
+        blog_enabled,
+    };
+    Ok(html_page(html::themes_index(&state.site, &tree, theme)))
 }
 
 async fn blog_disabled(
@@ -533,7 +610,6 @@ async fn render_not_found(
     force_txt: bool,
     detail: &str,
 ) -> Response {
-    let count = state.db.project_count().await.unwrap_or(0);
     if negotiate::wants_text(headers, force_txt) {
         (
             StatusCode::NOT_FOUND,
@@ -546,17 +622,21 @@ async fn render_not_found(
         )
             .into_response()
     } else {
-        (
-            StatusCode::NOT_FOUND,
-            [vary()],
+        (StatusCode::NOT_FOUND, [vary()], {
+            let projects = state.db.projects().await.unwrap_or_default();
+            let blog_enabled = state.db.blog_enabled().await.unwrap_or(false);
+            let tree = html::Tree {
+                projects: &projects,
+                blog_enabled,
+            };
             html::not_found(
                 &state.site,
+                &tree,
                 path,
-                count,
                 detail,
                 theme::Theme::from_headers(headers),
-            ),
-        )
+            )
+        })
             .into_response()
     }
 }
@@ -626,6 +706,11 @@ mod tests {
             super::KEYS_JS.len() <= 4_096,
             "keys.js is {} bytes",
             super::KEYS_JS.len()
+        );
+        assert!(
+            super::VIM_JS.len() <= 40_960,
+            "vim.js is {} bytes",
+            super::VIM_JS.len()
         );
     }
 }

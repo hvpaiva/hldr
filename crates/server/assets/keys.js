@@ -1,105 +1,112 @@
 (() => {
-  const help = document.querySelector(".keys-help");
-  const rows = [...document.querySelectorAll("tr.post-row")];
-  const prev = document.querySelector("a[rel=prev]");
-  const next = document.querySelector("a[rel=next]");
-  let chord = "";
-  let idx = -1;
-  let timer = 0;
+  const doc = document.documentElement;
+  const body = document.body;
+  doc.classList.add("js");
 
-  const go = (href) => {
-    if (href) location.href = href;
+  const store = (area, key, fallback) => {
+    try {
+      return JSON.parse(area.getItem(key)) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const save = (area, key, value) => {
+    try {
+      area.setItem(key, JSON.stringify(value));
+    } catch {
+      /* private mode */
+    }
   };
 
-  const pick = (i) => {
-    if (!rows.length) return;
-    idx = Math.max(0, Math.min(i, rows.length - 1));
-    rows.forEach((row, n) => row.classList.toggle("is-active", n === idx));
-    rows[idx].querySelector("a")?.focus();
+  const folds = store(localStorage, "hldr.fold", {});
+  document.querySelectorAll("details[data-fold]").forEach((d) => {
+    if (d.dataset.fold in folds) d.open = folds[d.dataset.fold];
+    d.addEventListener("toggle", () => {
+      folds[d.dataset.fold] = d.open;
+      save(localStorage, "hldr.fold", folds);
+    });
+  });
+
+  const toggle = document.getElementById("tt");
+  const wide = matchMedia("(min-width: 761px)");
+  if (wide.matches && store(localStorage, "hldr.notree", false)) toggle.checked = true;
+  toggle.addEventListener("change", () => {
+    if (wide.matches) save(localStorage, "hldr.notree", toggle.checked);
+  });
+
+  const here = body.dataset.path;
+  const bar = document.getElementById("bufs");
+  const label = bar.querySelector("a").textContent;
+  const tabs = store(sessionStorage, "hldr.bufs", []).filter((t) => t.h !== here);
+  if (body.dataset.ft) tabs.push({ h: here, l: label });
+  save(sessionStorage, "hldr.bufs", tabs);
+
+  const draw = () => {
+    bar.replaceChildren(
+      ...tabs.map((t) => {
+        const tab = document.createElement("span");
+        tab.className = "tab" + (t.h === here ? " on" : "");
+        const a = document.createElement("a");
+        a.href = t.h;
+        a.textContent = t.l;
+        const x = document.createElement("button");
+        x.type = "button";
+        x.textContent = "×";
+        x.setAttribute("aria-label", "close " + t.l);
+        x.dataset.close = t.h;
+        tab.append(a, x);
+        return tab;
+      }),
+    );
+    bar.querySelector(".on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+  draw();
+
+  let loading;
+  const vim = () => {
+    save(sessionStorage, "hldr.vim", true);
+    loading ??= new Promise((done) => {
+      const s = document.createElement("script");
+      s.src = "/vim.js";
+      s.onload = () => done(window.hldrVim);
+      document.head.append(s);
+    });
+    return loading;
   };
 
-  document.addEventListener("click", (event) => {
-    if (event.target === help?.querySelector(".keys-help-backdrop")) {
-      help.open = false;
+  const close = (href) => {
+    const i = tabs.findIndex((t) => t.h === href);
+    if (i < 0) return;
+    tabs.splice(i, 1);
+    save(sessionStorage, "hldr.bufs", tabs);
+    if (href !== here) return draw();
+    const next = tabs[Math.min(i, tabs.length - 1)];
+    if (next) location.href = next.h;
+    else vim().then((v) => v.intro());
+  };
+
+  document.addEventListener("click", (e) => {
+    const x = e.target.closest("[data-close]");
+    if (x) return close(x.dataset.close);
+    const c = e.target.closest("[data-cmd=find], [data-cmd=checkhealth]");
+    if (c) {
+      e.preventDefault();
+      vim().then((v) => v.run(c.dataset.cmd));
     }
   });
 
-  document.addEventListener("keydown", (event) => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const TRIGGER = new Set([":", "/", "?", "j", "k", "g", "G", "n", "N", "{", "}", "*", "F1"]);
+  const onKey = (e) => {
+    if (window.hldrVim) return;
     const el = document.activeElement;
-    if (
-      el &&
-      (el.tagName === "INPUT" ||
-        el.tagName === "TEXTAREA" ||
-        el.isContentEditable)
-    ) {
-      return;
-    }
+    if (e.metaKey || e.altKey || el?.matches("input:not(.tt), textarea, [contenteditable]")) return;
+    const ctrl = e.ctrlKey && "dufbhl".includes(e.key);
+    if (!ctrl && (e.ctrlKey || !TRIGGER.has(e.key))) return;
+    e.preventDefault();
+    vim().then((v) => v.key(e));
+  };
+  document.addEventListener("keydown", onKey);
 
-    if (event.key === "Escape") {
-      if (help?.open) {
-        help.open = false;
-        event.preventDefault();
-      }
-      chord = "";
-      return;
-    }
-
-    if (event.key === "?") {
-      event.preventDefault();
-      if (help) help.open = !help.open;
-      chord = "";
-      return;
-    }
-
-    if (help?.open) return;
-
-    if (chord === "g") {
-      chord = "";
-      clearTimeout(timer);
-      const dest = { h: "/", p: "/projects", a: "/about", t: "/theme" }[
-        event.key
-      ];
-      if (dest) {
-        event.preventDefault();
-        go(dest);
-      }
-      return;
-    }
-
-    if (event.key === "g") {
-      event.preventDefault();
-      chord = "g";
-      timer = setTimeout(() => {
-        chord = "";
-      }, 800);
-      return;
-    }
-
-    if ((event.key === "h" || event.key === "ArrowLeft") && prev) {
-      event.preventDefault();
-      go(prev.href);
-      return;
-    }
-    if ((event.key === "l" || event.key === "ArrowRight") && next) {
-      event.preventDefault();
-      go(next.href);
-      return;
-    }
-    if (event.key === "j") {
-      event.preventDefault();
-      pick(idx < 0 ? 0 : idx + 1);
-    }
-    if (event.key === "k") {
-      event.preventDefault();
-      pick(idx < 0 ? 0 : idx - 1);
-    }
-    if (event.key === "Enter" && idx >= 0) {
-      const href = rows[idx].querySelector(".post-title a")?.href;
-      if (href) {
-        event.preventDefault();
-        go(href);
-      }
-    }
-  });
+  if (store(sessionStorage, "hldr.vim", false)) vim();
+  window.hldrTabs = { list: () => tabs, close, vim };
 })();
