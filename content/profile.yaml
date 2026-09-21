@@ -2,7 +2,7 @@ name: Highlander Paiva
 headline: senior platform engineer → devsecops / appsec
 bio: >
   Senior platform engineer. I build delivery paths that are boring on
-  purpose: CI/CD, hosts you can rebuild, and security in the pipeline —
+  purpose: CI/CD, hosts you can rebuild, and security in the pipeline,
   not taped on after. This site is a sample of that craft.
 email: contact@hvpaiva.dev
 links:
@@ -20,10 +20,10 @@ about: |
   Current focus is putting security into that path. Certifications in
   progress, in order:
 
-  - Certified DevSecOps Professional (CDP) — Practical DevSecOps
+  - Certified DevSecOps Professional (CDP), Practical DevSecOps
   - AWS Certified Security – Specialty
-  - Professional Cloud Security Engineer — Google Cloud
-  - Certified Cloud Security Professional (CCSP) — ISC²
+  - Professional Cloud Security Engineer, Google Cloud
+  - Certified Cloud Security Professional (CCSP), ISC²
 
   Study also runs through TryHackMe and OWASP (Top 10, ASVS, SAMM).
 
