@@ -8,6 +8,7 @@ pub mod index;
 pub mod manifest;
 #[cfg(feature = "store")]
 pub mod store;
+pub mod tree;
 pub mod types;
 
 mod error;

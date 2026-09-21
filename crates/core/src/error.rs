@@ -20,6 +20,9 @@ pub enum Error {
     Invariant(&'static str),
     #[error("{path}: {message}", path = path.display())]
     File { path: PathBuf, message: String },
+    /// Several problems found in one pass, one per line.
+    #[error("{}", join(.0))]
+    Many(Vec<Error>),
 }
 
 impl Error {
@@ -29,4 +32,30 @@ impl Error {
             message: message.into(),
         }
     }
+
+    /// `Ok` when there is no problem, the problem itself when there is one,
+    /// and [`Error::Many`] when there are more.
+    pub fn collect(mut problems: Vec<Error>) -> Result<(), Error> {
+        match problems.len() {
+            0 => Ok(()),
+            1 => Err(problems.remove(0)),
+            _ => Err(Self::Many(problems)),
+        }
+    }
+
+    /// The problems this error stands for, one per entry.
+    pub fn problems(&self) -> Vec<&Error> {
+        match self {
+            Self::Many(problems) => problems.iter().flat_map(Error::problems).collect(),
+            other => vec![other],
+        }
+    }
+}
+
+fn join(problems: &[Error]) -> String {
+    problems
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
 }

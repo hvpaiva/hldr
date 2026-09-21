@@ -110,7 +110,8 @@ pub fn collect(catalog: &mut Catalog<'_>, args: &[PathBuf], verb: &str) -> Resul
                 .context("reading stdin")?;
             files.push(resolve(catalog, "stdin", None, text, verb)?);
         } else if arg.is_dir() {
-            for (rel, full) in walk(arg)? {
+            for rel in hldr_core::tree::paths(arg)? {
+                let full = arg.join(&rel);
                 let Some(location) = manifest::locate(&rel).ok().flatten() else {
                     eprintln!("skipping {}: not a content path", full.display());
                     continue;
@@ -195,31 +196,6 @@ fn resolve(
 
 fn read(path: &Path) -> Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
-}
-
-/// Files under `root`, as (path relative to root, full path), skipping
-/// hidden entries such as `.git`.
-fn walk(root: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
-    let mut out = Vec::new();
-    let mut pending = vec![root.to_owned()];
-    while let Some(dir) = pending.pop() {
-        for entry in
-            std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?
-        {
-            let entry = entry?;
-            if entry.file_name().to_string_lossy().starts_with('.') {
-                continue;
-            }
-            let path = entry.path();
-            if entry.file_type()?.is_dir() {
-                pending.push(path);
-            } else if let Ok(rel) = path.strip_prefix(root) {
-                out.push((rel.to_owned(), path.clone()));
-            }
-        }
-    }
-    out.sort();
-    Ok(out)
 }
 
 /// Commits `changes` and, unless told not to, has the server sync that exact

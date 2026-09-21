@@ -1,6 +1,5 @@
 use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -8,92 +7,90 @@ use sqlx::SqlitePool;
 use crate::Error;
 pub use crate::api::SyncReport;
 use crate::api::{ProfileSpec, ProjectSpec, SiteSpec, ThemeSpec};
-use crate::manifest::{self, Kind, Manifest};
+use crate::manifest::{Kind, Manifest};
 use crate::markdown::Markdown;
+use crate::tree::Tree;
 
 type Tx<'a> = sqlx::Transaction<'a, sqlx::Sqlite>;
 
-/// Materializes the content tree into the database, in one transaction:
-/// a tree that fails to parse leaves the previous state in place.
+/// Materializes the content tree into the database, in one transaction.
+/// The whole tree is read and checked before anything is written, so a tree
+/// with any problem leaves the previous state in place.
 pub async fn sync(pool: &SqlitePool, content_dir: &Path) -> Result<SyncReport, Error> {
-    if !content_dir.is_dir() {
-        return Err(Error::file(content_dir, "content directory does not exist"));
-    }
-
+    let tree = Tree::read(content_dir)?;
     let markdown = Markdown::new();
     let mut tx = pool.begin().await?;
-    let mut report = SyncReport {
-        site_updated: sync_site(&mut tx, content_dir).await?,
-        profile_updated: sync_profile(&mut tx, content_dir, &markdown).await?,
-        ..SyncReport::default()
-    };
-    let seen = sync_projects(&mut tx, content_dir, &markdown, &mut report).await?;
-    report.projects_deleted = delete_missing(&mut tx, Kind::Project, &seen).await?;
-    let seen = sync_themes(&mut tx, content_dir, &mut report).await?;
-    report.themes_deleted = delete_missing(&mut tx, Kind::Theme, &seen).await?;
-    check_default_theme(&mut tx).await?;
+    let mut report = SyncReport::default();
+    let mut projects = HashSet::new();
+    let mut themes = HashSet::new();
+    for file in &tree.files {
+        let source_hash = hash(&file.bytes);
+        match &file.manifest {
+            Manifest::Site(spec) => {
+                report.site_updated = upsert_site(&mut tx, spec, &source_hash).await?;
+            }
+            Manifest::Profile(spec) => {
+                report.profile_updated =
+                    upsert_profile(&mut tx, spec, &source_hash, &markdown).await?;
+            }
+            Manifest::Project { name, spec } => {
+                projects.insert(name.clone());
+                if upsert_project(&mut tx, name, spec, &source_hash, &markdown).await? {
+                    report.projects_upserted += 1;
+                } else {
+                    report.projects_skipped += 1;
+                }
+            }
+            Manifest::Theme { name, spec } => {
+                themes.insert(name.clone());
+                if upsert_theme(&mut tx, name, spec, &source_hash).await? {
+                    report.themes_upserted += 1;
+                } else {
+                    report.themes_skipped += 1;
+                }
+            }
+        }
+    }
+    report.projects_deleted = delete_missing(&mut tx, Kind::Project, &projects).await?;
+    report.themes_deleted = delete_missing(&mut tx, Kind::Theme, &themes).await?;
 
     tx.commit().await?;
     Ok(report)
 }
 
-/// Reads a content file; `rel` is relative to the content root.
-fn read(content_dir: &Path, rel: &Path) -> Result<Vec<u8>, Error> {
-    fs::read(content_dir.join(rel)).map_err(|err| Error::file(rel, err.to_string()))
-}
-
-/// Files of one named kind, relative to the content root, in name order.
-fn listed(content_dir: &Path, kind: Kind) -> Result<Vec<PathBuf>, Error> {
-    let (dir, file) = kind
-        .path_template()
-        .split_once('/')
-        .ok_or(Error::Invariant("named kinds live in a directory"))?;
-    let extension = file.rsplit_once('.').map_or("", |(_, ext)| ext);
-    let full = content_dir.join(dir);
-    if !full.exists() {
-        return Ok(Vec::new());
+/// Whether the row already holds a file with this hash, which leaves it as is.
+async fn unchanged(
+    tx: &mut Tx<'_>,
+    sql: &'static str,
+    key: Option<&str>,
+    source_hash: &str,
+) -> Result<bool, Error> {
+    let mut query = sqlx::query_scalar::<_, String>(sql);
+    if let Some(key) = key {
+        query = query.bind(key);
     }
-    let mut entries: Vec<PathBuf> = fs::read_dir(&full)?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == extension))
-        .filter_map(|path| path.file_name().map(|name| Path::new(dir).join(name)))
-        .collect();
-    entries.sort();
-    Ok(entries)
+    let existing = query.fetch_optional(&mut **tx).await?;
+    Ok(existing.as_deref() == Some(source_hash))
 }
 
-/// Name a file under a kind's directory holds, registered in `seen`.
-fn claim(rel: &Path, seen: &mut HashSet<String>) -> Result<String, Error> {
-    let name = manifest::locate(rel)?
-        .and_then(|location| location.name)
-        .ok_or_else(|| Error::file(rel, "not a named resource"))?;
-    if !seen.insert(name.clone()) {
-        return Err(Error::file(rel, "duplicate name"));
-    }
-    Ok(name)
-}
-
-async fn sync_site(tx: &mut Tx<'_>, content_dir: &Path) -> Result<bool, Error> {
-    let rel = PathBuf::from(manifest::path(Kind::Site, None));
-    let bytes = read(content_dir, &rel)?;
-    let source_hash = hash(&bytes);
-    let existing: Option<String> = sqlx::query_scalar("SELECT source_hash FROM site WHERE id = 1")
-        .fetch_optional(&mut **tx)
-        .await?;
-    if existing.as_deref() == Some(source_hash.as_str()) {
+async fn upsert_site(tx: &mut Tx<'_>, spec: &SiteSpec, source_hash: &str) -> Result<bool, Error> {
+    if unchanged(
+        tx,
+        "SELECT source_hash FROM site WHERE id = 1",
+        None,
+        source_hash,
+    )
+    .await?
+    {
         return Ok(false);
     }
-
-    let Manifest::Site(SiteSpec {
+    let SiteSpec {
         title,
         theme,
         banner,
         descriptions,
         blog,
-    }) = manifest::parse(&rel, &bytes)?
-    else {
-        return Err(Error::file(&rel, "not a site manifest"));
-    };
+    } = spec;
     sqlx::query(
         "INSERT INTO site (
             id, title, theme, banner, descriptions, blog_enabled, source_hash, updated_at
@@ -107,110 +104,64 @@ async fn sync_site(tx: &mut Tx<'_>, content_dir: &Path) -> Result<bool, Error> {
             source_hash = excluded.source_hash,
             updated_at = excluded.updated_at",
     )
-    .bind(&title)
-    .bind(&theme)
+    .bind(title)
+    .bind(theme)
     .bind(banner.as_ref().map(serde_json::to_string).transpose()?)
-    .bind(serde_json::to_string(&descriptions)?)
+    .bind(serde_json::to_string(descriptions)?)
     .bind(blog.enabled)
-    .bind(&source_hash)
+    .bind(source_hash)
     .bind(now_rfc3339())
     .execute(&mut **tx)
     .await?;
     Ok(true)
 }
 
-/// Checked on every sync, not only when `site.yaml` changes: removing the
-/// default theme's file must fail as well.
-async fn check_default_theme(tx: &mut Tx<'_>) -> Result<(), Error> {
-    let (theme, exists): (String, bool) = sqlx::query_as(
-        "SELECT theme, EXISTS (SELECT 1 FROM themes WHERE slug = site.theme)
-         FROM site WHERE id = 1",
-    )
-    .fetch_one(&mut **tx)
-    .await?;
-    if exists {
-        Ok(())
-    } else {
-        Err(Error::file(
-            manifest::path(Kind::Site, None),
-            format!("theme {theme} has no themes/{theme}.yaml"),
-        ))
-    }
-}
-
-async fn sync_themes(
+async fn upsert_theme(
     tx: &mut Tx<'_>,
-    content_dir: &Path,
-    report: &mut SyncReport,
-) -> Result<HashSet<String>, Error> {
-    let mut seen = HashSet::new();
-    for rel in listed(content_dir, Kind::Theme)? {
-        let slug = claim(&rel, &mut seen)?;
-        let bytes = read(content_dir, &rel)?;
-        let source_hash = hash(&bytes);
-        let existing: Option<String> =
-            sqlx::query_scalar("SELECT source_hash FROM themes WHERE slug = ?1")
-                .bind(&slug)
-                .fetch_optional(&mut **tx)
-                .await?;
-        if existing.as_deref() == Some(source_hash.as_str()) {
-            report.themes_skipped += 1;
-            continue;
-        }
-        let Manifest::Theme {
-            spec:
-                ThemeSpec {
-                    title,
-                    dark,
-                    colors,
-                },
-            ..
-        } = manifest::parse(&rel, &bytes)?
-        else {
-            return Err(Error::file(&rel, "not a theme"));
-        };
-        sqlx::query(
-            "INSERT INTO themes (slug, title, dark, colors, source_hash, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(slug) DO UPDATE SET
-                title = excluded.title,
-                dark = excluded.dark,
-                colors = excluded.colors,
-                source_hash = excluded.source_hash,
-                updated_at = excluded.updated_at",
-        )
-        .bind(&slug)
-        .bind(&title)
-        .bind(dark)
-        .bind(serde_json::to_string(&colors)?)
-        .bind(&source_hash)
-        .bind(now_rfc3339())
-        .execute(&mut **tx)
-        .await?;
-        report.themes_upserted += 1;
-    }
-    Ok(seen)
-}
-
-async fn sync_profile(
-    tx: &mut Tx<'_>,
-    content_dir: &Path,
-    markdown: &Markdown,
+    slug: &str,
+    spec: &ThemeSpec,
+    source_hash: &str,
 ) -> Result<bool, Error> {
-    let rel = PathBuf::from(manifest::path(Kind::Profile, None));
-    let bytes = read(content_dir, &rel)?;
-    let source_hash = hash(&bytes);
-    let existing: Option<String> =
-        sqlx::query_scalar("SELECT source_hash FROM profile WHERE id = 1")
-            .fetch_optional(&mut **tx)
-            .await?;
-    if existing.as_deref() == Some(source_hash.as_str()) {
+    let sql = "SELECT source_hash FROM themes WHERE slug = ?1";
+    if unchanged(tx, sql, Some(slug), source_hash).await? {
         return Ok(false);
     }
+    let ThemeSpec {
+        title,
+        dark,
+        colors,
+    } = spec;
+    sqlx::query(
+        "INSERT INTO themes (slug, title, dark, colors, source_hash, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(slug) DO UPDATE SET
+            title = excluded.title,
+            dark = excluded.dark,
+            colors = excluded.colors,
+            source_hash = excluded.source_hash,
+            updated_at = excluded.updated_at",
+    )
+    .bind(slug)
+    .bind(title)
+    .bind(dark)
+    .bind(serde_json::to_string(colors)?)
+    .bind(source_hash)
+    .bind(now_rfc3339())
+    .execute(&mut **tx)
+    .await?;
+    Ok(true)
+}
 
-    let Manifest::Profile(spec) = manifest::parse(&rel, &bytes)? else {
-        return Err(Error::file(&rel, "not a profile"));
-    };
+async fn upsert_profile(
+    tx: &mut Tx<'_>,
+    spec: &ProfileSpec,
+    source_hash: &str,
+    markdown: &Markdown,
+) -> Result<bool, Error> {
+    let sql = "SELECT source_hash FROM profile WHERE id = 1";
+    if unchanged(tx, sql, None, source_hash).await? {
+        return Ok(false);
+    }
     let ProfileSpec {
         name,
         headline,
@@ -219,10 +170,6 @@ async fn sync_profile(
         links,
         body,
     } = spec;
-    let links = serde_json::to_string(&links)?;
-    let about_html = markdown.html(&body);
-    let about_text = Markdown::text(&body);
-
     sqlx::query(
         "INSERT INTO profile (
             id, name, headline, bio, about_source, about_html, about_text,
@@ -240,63 +187,32 @@ async fn sync_profile(
             source_hash = excluded.source_hash,
             updated_at = excluded.updated_at",
     )
-    .bind(&name)
-    .bind(&headline)
-    .bind(&bio)
-    .bind(&body)
-    .bind(&about_html)
-    .bind(&about_text)
-    .bind(&email)
-    .bind(&links)
-    .bind(&source_hash)
+    .bind(name)
+    .bind(headline)
+    .bind(bio)
+    .bind(body)
+    .bind(markdown.html(body))
+    .bind(Markdown::text(body))
+    .bind(email)
+    .bind(serde_json::to_string(links)?)
+    .bind(source_hash)
     .bind(now_rfc3339())
     .execute(&mut **tx)
     .await?;
-
     Ok(true)
-}
-
-async fn sync_projects(
-    tx: &mut Tx<'_>,
-    content_dir: &Path,
-    markdown: &Markdown,
-    report: &mut SyncReport,
-) -> Result<HashSet<String>, Error> {
-    let mut seen = HashSet::new();
-    for rel in listed(content_dir, Kind::Project)? {
-        if upsert_project(tx, content_dir, &rel, markdown, &mut seen).await? {
-            report.projects_upserted += 1;
-        } else {
-            report.projects_skipped += 1;
-        }
-    }
-
-    Ok(seen)
 }
 
 async fn upsert_project(
     tx: &mut Tx<'_>,
-    content_dir: &Path,
-    rel: &Path,
+    slug: &str,
+    spec: &ProjectSpec,
+    source_hash: &str,
     markdown: &Markdown,
-    seen: &mut HashSet<String>,
 ) -> Result<bool, Error> {
-    let slug = claim(rel, seen)?;
-
-    let bytes = read(content_dir, rel)?;
-    let source_hash = hash(&bytes);
-    let existing: Option<String> =
-        sqlx::query_scalar("SELECT source_hash FROM projects WHERE slug = ?1")
-            .bind(&slug)
-            .fetch_optional(&mut **tx)
-            .await?;
-    if existing.as_deref() == Some(source_hash.as_str()) {
+    let sql = "SELECT source_hash FROM projects WHERE slug = ?1";
+    if unchanged(tx, sql, Some(slug), source_hash).await? {
         return Ok(false);
     }
-
-    let Manifest::Project { spec, .. } = manifest::parse(rel, &bytes)? else {
-        return Err(Error::file(rel, "not a project"));
-    };
     let ProjectSpec {
         title,
         tagline,
@@ -309,12 +225,6 @@ async fn upsert_project(
         assets,
         body,
     } = spec;
-
-    let now = now_rfc3339();
-    let tags = serde_json::to_string(&tags)?;
-    let links = serde_json::to_string(&links)?;
-    let body_html = markdown.html(&body);
-    let body_text = Markdown::text(&body);
 
     sqlx::query(
         "INSERT INTO projects (
@@ -339,34 +249,34 @@ async fn upsert_project(
             created_at = projects.created_at,
             updated_at = excluded.updated_at",
     )
-    .bind(&slug)
-    .bind(&title)
-    .bind(&tagline)
+    .bind(slug)
+    .bind(title)
+    .bind(tagline)
     .bind(status.as_str())
     .bind(draft)
     .bind(highlight)
-    .bind(&tags)
-    .bind(&links)
-    .bind(&github)
-    .bind(&body)
-    .bind(&body_html)
-    .bind(&body_text)
-    .bind(&source_hash)
-    .bind(&now)
+    .bind(serde_json::to_string(tags)?)
+    .bind(serde_json::to_string(links)?)
+    .bind(github)
+    .bind(body)
+    .bind(markdown.html(body))
+    .bind(Markdown::text(body))
+    .bind(source_hash)
+    .bind(now_rfc3339())
     .execute(&mut **tx)
     .await?;
 
     sqlx::query("DELETE FROM project_assets WHERE project_slug = ?1")
-        .bind(&slug)
+        .bind(slug)
         .execute(&mut **tx)
         .await?;
 
-    for asset in &assets {
+    for asset in assets {
         sqlx::query(
             "INSERT INTO project_assets (project_slug, path, caption, width, height, hash, derivatives)
              VALUES (?1, ?2, ?3, 0, 0, '', '[]')",
         )
-        .bind(&slug)
+        .bind(slug)
         .bind(&asset.path)
         .bind(&asset.caption)
         .execute(&mut **tx)
@@ -408,6 +318,8 @@ fn now_rfc3339() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::db::Db;
     use crate::testing::{SITE, THEME};
