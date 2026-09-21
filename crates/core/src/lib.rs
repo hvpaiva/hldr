@@ -1,20 +1,26 @@
 use serde::Serialize;
 
 pub mod api;
+#[cfg(feature = "store")]
 pub mod db;
+#[cfg(feature = "store")]
 pub mod index;
 pub mod manifest;
+#[cfg(feature = "store")]
 pub mod store;
 pub mod types;
 
 mod error;
+#[cfg(feature = "store")]
 mod markdown;
 #[cfg(test)]
 mod testing;
 
+pub use api::SyncReport;
+#[cfg(feature = "store")]
 pub use db::Db;
 pub use error::Error;
-pub use index::SyncReport;
+#[cfg(feature = "store")]
 pub use store::{Profile, Project, ProjectSummary, SiteConfig, SyncState, Theme};
 
 /// Release version, stamped at build time through `HLDR_VERSION`.

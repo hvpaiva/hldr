@@ -4,8 +4,10 @@ use std::path::PathBuf;
 pub enum Error {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[cfg(feature = "store")]
     #[error("sqlite: {0}")]
     Sqlx(#[from] sqlx::Error),
+    #[cfg(feature = "store")]
     #[error("migrate: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
     #[error("yaml: {0}")]

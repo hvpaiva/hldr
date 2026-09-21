@@ -143,6 +143,27 @@ pub struct BlogSpec {
     pub enabled: bool,
 }
 
+/// What one pass of the indexer changed.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SyncReport {
+    /// `site.yaml` changed a value.
+    pub site_updated: bool,
+    /// `profile.md` changed.
+    pub profile_updated: bool,
+    /// Projects created or rewritten.
+    pub projects_upserted: u32,
+    /// Projects whose files did not change.
+    pub projects_skipped: u32,
+    /// Projects whose files are gone.
+    pub projects_deleted: u32,
+    /// Themes created or rewritten.
+    pub themes_upserted: u32,
+    /// Themes whose files did not change.
+    pub themes_skipped: u32,
+    /// Themes whose files are gone.
+    pub themes_deleted: u32,
+}
+
 /// State of the content sync, as `hldr sync status` shows it.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SyncStatus {
@@ -161,11 +182,12 @@ pub struct SyncStatus {
     /// What this sync changed. Present only on the response to a sync that
     /// indexed content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub report: Option<crate::SyncReport>,
+    pub report: Option<SyncReport>,
 }
 
+#[cfg(feature = "store")]
 impl SyncStatus {
-    pub fn new(source: String, state: crate::SyncState, report: Option<crate::SyncReport>) -> Self {
+    pub fn new(source: String, state: crate::SyncState, report: Option<SyncReport>) -> Self {
         Self {
             kind: "SyncStatus".to_owned(),
             source,
@@ -356,110 +378,118 @@ fn titled<T: JsonSchema>(title: &str) -> serde_json::Value {
     schema.to_value()
 }
 
-impl From<&crate::Project> for Project {
-    fn from(item: &crate::Project) -> Self {
-        Resource {
-            kind: Kind::Project.as_str().to_owned(),
-            metadata: ProjectMetadata {
-                name: item.slug.clone(),
-                created_at: item.created_at.clone(),
-                updated_at: item.updated_at.clone(),
-            },
-            spec: ProjectSpec {
-                title: item.title.clone(),
-                tagline: item.tagline.clone(),
-                status: item.status,
-                draft: item.draft,
-                highlight: item.highlight,
-                tags: item.tags.clone(),
-                links: item.links.clone(),
-                github: item.github_repo.clone(),
-                assets: item.assets.clone(),
-                body: item.body_source.clone(),
-            },
-            status: empty_status(),
-        }
-    }
-}
+#[cfg(feature = "store")]
+mod from_store {
+    use super::*;
 
-impl From<&crate::Profile> for Profile {
-    fn from(item: &crate::Profile) -> Self {
-        Resource {
-            kind: Kind::Profile.as_str().to_owned(),
-            metadata: ProfileMetadata {
-                updated_at: item.updated_at.clone(),
-            },
-            spec: ProfileSpec {
-                name: item.name.clone(),
-                headline: item.headline.clone(),
-                bio: item.bio.clone(),
-                email: item.email.clone(),
-                links: item.links.clone(),
-                body: item.about_source.clone(),
-            },
-            status: empty_status(),
-        }
+    fn empty_status() -> serde_json::Value {
+        serde_json::Value::Object(serde_json::Map::new())
     }
-}
 
-impl From<&crate::SiteConfig> for Site {
-    fn from(item: &crate::SiteConfig) -> Self {
-        Resource {
-            kind: Kind::Site.as_str().to_owned(),
-            metadata: SiteMetadata {
-                updated_at: item.updated_at.clone(),
-            },
-            spec: SiteSpec {
-                title: item.title.clone(),
-                theme: item.theme.clone(),
-                banner: item.banner.clone(),
-                descriptions: item.descriptions.clone(),
-                blog: BlogSpec {
-                    enabled: item.blog_enabled,
+    impl From<&crate::Project> for Project {
+        fn from(item: &crate::Project) -> Self {
+            Resource {
+                kind: Kind::Project.as_str().to_owned(),
+                metadata: ProjectMetadata {
+                    name: item.slug.clone(),
+                    created_at: item.created_at.clone(),
+                    updated_at: item.updated_at.clone(),
                 },
-            },
-            status: empty_status(),
+                spec: ProjectSpec {
+                    title: item.title.clone(),
+                    tagline: item.tagline.clone(),
+                    status: item.status,
+                    draft: item.draft,
+                    highlight: item.highlight,
+                    tags: item.tags.clone(),
+                    links: item.links.clone(),
+                    github: item.github_repo.clone(),
+                    assets: item.assets.clone(),
+                    body: item.body_source.clone(),
+                },
+                status: empty_status(),
+            }
+        }
+    }
+
+    impl From<&crate::Profile> for Profile {
+        fn from(item: &crate::Profile) -> Self {
+            Resource {
+                kind: Kind::Profile.as_str().to_owned(),
+                metadata: ProfileMetadata {
+                    updated_at: item.updated_at.clone(),
+                },
+                spec: ProfileSpec {
+                    name: item.name.clone(),
+                    headline: item.headline.clone(),
+                    bio: item.bio.clone(),
+                    email: item.email.clone(),
+                    links: item.links.clone(),
+                    body: item.about_source.clone(),
+                },
+                status: empty_status(),
+            }
+        }
+    }
+
+    impl From<&crate::SiteConfig> for Site {
+        fn from(item: &crate::SiteConfig) -> Self {
+            Resource {
+                kind: Kind::Site.as_str().to_owned(),
+                metadata: SiteMetadata {
+                    updated_at: item.updated_at.clone(),
+                },
+                spec: SiteSpec {
+                    title: item.title.clone(),
+                    theme: item.theme.clone(),
+                    banner: item.banner.clone(),
+                    descriptions: item.descriptions.clone(),
+                    blog: BlogSpec {
+                        enabled: item.blog_enabled,
+                    },
+                },
+                status: empty_status(),
+            }
+        }
+    }
+
+    impl From<&crate::Theme> for Theme {
+        fn from(item: &crate::Theme) -> Self {
+            Resource {
+                kind: Kind::Theme.as_str().to_owned(),
+                metadata: ThemeMetadata {
+                    name: item.slug.clone(),
+                    updated_at: item.updated_at.clone(),
+                },
+                spec: ThemeSpec {
+                    title: item.title.clone(),
+                    dark: item.dark,
+                    colors: item.colors.clone(),
+                },
+                status: empty_status(),
+            }
+        }
+    }
+
+    /// Themes as a `ThemeList`.
+    pub fn theme_list(items: &[crate::Theme]) -> List<Theme> {
+        List {
+            kind: "ThemeList".to_owned(),
+            items: items.iter().map(Theme::from).collect(),
+        }
+    }
+
+    /// Projects as a `ProjectList`.
+    pub fn project_list(items: &[crate::Project]) -> List<Project> {
+        List {
+            kind: "ProjectList".to_owned(),
+            items: items.iter().map(Project::from).collect(),
         }
     }
 }
 
-impl From<&crate::Theme> for Theme {
-    fn from(item: &crate::Theme) -> Self {
-        Resource {
-            kind: Kind::Theme.as_str().to_owned(),
-            metadata: ThemeMetadata {
-                name: item.slug.clone(),
-                updated_at: item.updated_at.clone(),
-            },
-            spec: ThemeSpec {
-                title: item.title.clone(),
-                dark: item.dark,
-                colors: item.colors.clone(),
-            },
-            status: empty_status(),
-        }
-    }
-}
-
-/// Themes as a `ThemeList`.
-pub fn theme_list(items: &[crate::Theme]) -> List<Theme> {
-    List {
-        kind: "ThemeList".to_owned(),
-        items: items.iter().map(Theme::from).collect(),
-    }
-}
-
-/// Projects as a `ProjectList`.
-pub fn project_list(items: &[crate::Project]) -> List<Project> {
-    List {
-        kind: "ProjectList".to_owned(),
-        items: items.iter().map(Project::from).collect(),
-    }
-}
-
-fn empty_status() -> serde_json::Value {
-    serde_json::Value::Object(serde_json::Map::new())
-}
+#[cfg(feature = "store")]
+pub use from_store::{project_list, theme_list};
 
 #[cfg(test)]
 mod tests {
@@ -561,7 +591,7 @@ mod tests {
                 assets: Vec::new(),
                 body: "Body.\n".to_owned(),
             },
-            status: empty_status(),
+            status: serde_json::json!({}),
         };
         let json = serde_json::to_string(&project).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();

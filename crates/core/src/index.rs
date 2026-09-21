@@ -2,36 +2,14 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 
 use crate::Error;
+pub use crate::api::SyncReport;
 use crate::api::{ProfileSpec, ProjectSpec, SiteSpec, ThemeSpec};
 use crate::manifest::{self, Kind, Manifest};
 use crate::markdown::Markdown;
-
-/// What one pass of the indexer changed.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct SyncReport {
-    /// `site.yaml` changed a value.
-    pub site_updated: bool,
-    /// `profile.md` changed.
-    pub profile_updated: bool,
-    /// Projects created or rewritten.
-    pub projects_upserted: u32,
-    /// Projects whose files did not change.
-    pub projects_skipped: u32,
-    /// Projects whose files are gone.
-    pub projects_deleted: u32,
-    /// Themes created or rewritten.
-    pub themes_upserted: u32,
-    /// Themes whose files did not change.
-    pub themes_skipped: u32,
-    /// Themes whose files are gone.
-    pub themes_deleted: u32,
-}
 
 type Tx<'a> = sqlx::Transaction<'a, sqlx::Sqlite>;
 

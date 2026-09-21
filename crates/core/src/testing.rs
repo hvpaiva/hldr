@@ -1,6 +1,8 @@
 //! Content shared by the unit tests.
 
+#[cfg(feature = "store")]
 use std::fs;
+#[cfg(feature = "store")]
 use std::path::Path;
 
 pub const SITE: &str = "\
@@ -38,6 +40,7 @@ colors:
 ";
 
 /// Writes `site.yaml` and the theme it names under `dir`.
+#[cfg(feature = "store")]
 pub fn write_site(dir: &Path) {
     fs::write(dir.join("site.yaml"), SITE).unwrap();
     fs::create_dir_all(dir.join("themes")).unwrap();

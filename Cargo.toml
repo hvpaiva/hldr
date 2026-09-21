@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/hvpaiva/hldr"
 
 [workspace.dependencies]
-hldr-core = { path = "crates/core" }
+hldr-core = { path = "crates/core", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
