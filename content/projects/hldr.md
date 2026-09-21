@@ -1,6 +1,6 @@
 ---
 title: hldr
-tagline: Site and CLI for hvpaiva.dev. HTML for browsers, text for curl.
+tagline: Site and CLI for hvpaiva.dev.
 status: active
 highlight: 1
 tags: [rust, sqlite]
@@ -16,7 +16,7 @@ SQLite. The image lives in the registry. Administration is a CLI in the
 kubectl shape, not a web panel.
 
 The public surface is HTML rendered on the server. No JavaScript is
-required to read it. `curl hvpaiva.dev` is a first-class interface.
+required to read it.
 
 ## Why it exists
 

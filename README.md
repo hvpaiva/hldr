@@ -2,8 +2,8 @@
 
 Site and CLI for [hvpaiva.dev](https://hvpaiva.dev).
 
-HTML in a browser. Text if you `curl`. Content is markdown in git; runtime
-state lives in SQLite. Administration is a CLI in the kubectl shape; there
+HTML in a browser. Content is markdown in git; runtime state lives in
+SQLite. Administration is a CLI in the kubectl shape; there
 is no web panel. JavaScript is not required to read the pages.
 
 The site is a sample of the craft. A push to `main` that changes the site
