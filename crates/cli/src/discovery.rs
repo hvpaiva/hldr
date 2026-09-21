@@ -202,7 +202,11 @@ mod tests {
         Catalog::new(&client, Some(cache.path()))
             .resolve("p")
             .unwrap_err();
-        assert_eq!(stub.calls(), 1, "a run that fetched does not fetch again on a miss");
+        assert_eq!(
+            stub.calls(),
+            1,
+            "a run that fetched does not fetch again on a miss"
+        );
         Catalog::new(&client, Some(cache.path()))
             .resolve("project")
             .unwrap();
