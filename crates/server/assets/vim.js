@@ -342,13 +342,13 @@
     }
     if (is("Neotree", "NvimTreeToggle", "NERDTreeToggle", "Lex", "Lexplore", "Ex", "Explore")) { toggleTree(); return; }
     if (is("Telescope", "FzfLua", "Files", "Pick")) { finder(); return; }
-    if (is("version", "ve")) { more(`HLDR v${version} (hvpaiva.dev)\nBuild type: Release · maud + axum + sqlite (WAL)\n\nFeatures: +sqlite +markdown +colorschemes -javascript_required -curl\n\n   system vimrc file: "content/profile.yaml"\n     user vimrc file: none. you're a visitor.`); return; }
+    if (is("version", "ve")) { more(`HLDR v${version} (hvpaiva.dev)\nBuild type: Release · maud + axum + sqlite (WAL)\n\nFeatures: +sqlite +markdown +colorschemes -javascript_required -curl\n\n   system vimrc file: "hldr-content/site.yaml"\n     user vimrc file: none. you're a visitor.`); return; }
     if (is("smile")) { more(BANNER + "\n\n              thanks for reading the source."); return; }
     if (is("intro", "Alpha", "Dashboard")) { intro(); return; }
     if (is("q", "quit", "qa", "qall", "clo", "close")) { msg("this is a website. Close the tab, or stay: :help", "w"); return; }
     if (is("q!", "qa!", "cq")) { msg("E37: No write since last change. Just kidding, there were none. The tab stays.", "w"); return; }
     if (is("w", "write", "up", "update", "wa")) { msg("E45: 'readonly' option is set (add ! to override)", "e"); return; }
-    if (is("w!", "wq", "wq!", "x", "xa", "wqa")) { msg("E212: Can't open file for writing. The source is git: github.com/hvpaiva/hldr", "e"); return; }
+    if (is("w!", "wq", "wq!", "x", "xa", "wqa")) { msg("E212: Can't open file for writing. The source is git: github.com/hvpaiva/hldr-content", "e"); return; }
     if (is("Lazy", "Mason", "PackerSync", "PlugInstall")) { msg("0 plugins. it's server-rendered HTML.", "w"); return; }
     msg(`E492: Not an editor command: ${s}`, "e");
   };
