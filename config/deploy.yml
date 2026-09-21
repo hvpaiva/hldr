@@ -30,6 +30,8 @@ builder:
 
 ssh:
   user: hvpaiva
+  keys:
+    - ~/.ssh/id_ed25519
 
 env:
   clear:
