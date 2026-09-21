@@ -6,6 +6,12 @@ on:
     branches: [main]
     tags: ["v*.*.*"]
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Increment semver, tag, and deploy. none = deploy the version already in Cargo.toml.
+        type: choice
+        options: [none, patch, minor, major]
+        default: none
 
 concurrency:
   group: hldr-${{ github.workflow }}-${{ github.ref }}
@@ -89,42 +95,35 @@ jobs:
       name: production
       url: https://hvpaiva.dev
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - id: version
+        env:
+          BUMP: ${{ github.event.inputs.bump || 'none' }}
         run: |
           set -euo pipefail
-          cargo_ver=$(awk '
-            /^\[workspace.package\]/ { p=1; next }
-            p && /^\[/ { exit }
-            p && /^version =/ {
-              gsub(/[" ]/, "")
-              split($0, a, "=")
-              print a[2]
-              exit
-            }
-          ' Cargo.toml)
-          if [ -z "$cargo_ver" ]; then
-            echo "workspace.package.version missing" >&2
-            exit 1
-          fi
           git fetch --quiet origin main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "$GITHUB_SHA is not on origin/main" >&2
             exit 1
           fi
+          bumped=false
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            tag="${GITHUB_REF_NAME#v}"
-            if [ "$tag" != "$cargo_ver" ]; then
-              echo "tag $GITHUB_REF_NAME does not match Cargo.toml $cargo_ver" >&2
-              exit 1
-            fi
+            ver="${GITHUB_REF_NAME#v}"
+            python3 scripts/version.py set "$ver"
+          elif [ "$BUMP" != "none" ]; then
+            ver=$(python3 scripts/version.py bump "$BUMP")
+            bumped=true
+          else
+            ver=$(python3 scripts/version.py current)
+            python3 scripts/version.py set "$ver"
           fi
-          echo "semver=$cargo_ver" >> "$GITHUB_OUTPUT"
+          echo "semver=$ver" >> "$GITHUB_OUTPUT"
+          echo "bumped=$bumped" >> "$GITHUB_OUTPUT"
       - uses: ruby/setup-ruby@a0102e0972be65f351c307e2d64b9314a57c8073 # v1.324.0
         with:
           ruby-version: "3.3"
@@ -138,3 +137,15 @@ jobs:
       - run: kamal deploy --version "${{ steps.version.outputs.semver }}"
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.version.outputs.bumped == 'true'
+        env:
+          VER: ${{ steps.version.outputs.semver }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "release: v${VER}"
+          git tag "v${VER}"
+          git push origin HEAD:main
+          git push origin "v${VER}"
