@@ -8,6 +8,10 @@ name: deploy
 on:
   push:
     branches: [main]
+  # Daily: retries a release that did not reach production, and fails (so
+  # GitHub mails) when production runs something other than the last tag.
+  schedule:
+    - cron: "23 9 * * *"
   workflow_dispatch:
     inputs:
       version:
@@ -43,6 +47,15 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
         run: .github/scripts/release-plan
+      - if: github.event_name == 'schedule' && steps.plan.outputs.release == 'false'
+        env:
+          RELEASED: ${{ steps.plan.outputs.version }}
+        run: |
+          live=$(curl -fsS --retry 3 https://hvpaiva.dev/healthz | jq -r .version)
+          if [ "$live" != "$RELEASED" ]; then
+            echo "::error::production runs $live; the last release is $RELEASED"
+            exit 1
+          fi
 
   check:
     needs: plan
