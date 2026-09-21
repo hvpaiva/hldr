@@ -2,7 +2,7 @@ service: hldr
 image: hvpaiva/hldr
 
 servers:
-  - <%= ENV.fetch("DEPLOY_HOST") %>
+  - 72.61.46.31
 
 proxy:
   ssl: true
@@ -29,7 +29,7 @@ builder:
     options: mode=max
 
 ssh:
-  user: hvpaiva
+  user: deploy
 
 env:
   clear:
