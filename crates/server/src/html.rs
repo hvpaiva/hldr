@@ -76,7 +76,7 @@ fn layout(page: Page<'_>, lines: Vec<Markup>) -> Markup {
                 meta property="og:type" content="website";
                 meta name="twitter:card" content="summary";
                 link rel="icon" href=(format!("/favicon.svg?t={}", page.theme.slug)) type="image/svg+xml";
-                link rel="stylesheet" href="/style.css?v=c1";
+                link rel="stylesheet" href=(format!("/style.css?v={}", hldr_core::VERSION));
                 style { (PreEscaped(page.theme.root_css())) }
                 @if let Some(json_ld) = &page.json_ld {
                     script type="application/ld+json" { (PreEscaped(json_ld)) }
@@ -115,7 +115,7 @@ fn layout(page: Page<'_>, lines: Vec<Markup>) -> Markup {
                         span #pos .pos { (lines.len()) "L" }
                     }
                 }
-                script src="/keys.js" defer {}
+                script src=(format!("/keys.js?v={}", hldr_core::VERSION)) defer {}
             }
         }
     }

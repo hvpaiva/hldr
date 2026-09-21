@@ -2,6 +2,7 @@
   const doc = document.documentElement;
   const body = document.body;
   doc.classList.add("js");
+  const release = new URL(document.currentScript.src).search;
 
   const store = (area, key, fallback) => {
     try {
@@ -67,7 +68,7 @@
     save(sessionStorage, "hldr.vim", true);
     loading ??= new Promise((done) => {
       const s = document.createElement("script");
-      s.src = "/vim.js";
+      s.src = "/vim.js" + release;
       s.onload = () => done(window.hldrVim);
       document.head.append(s);
     });
