@@ -6,10 +6,9 @@ HTML in a browser. Text if you `curl`. Content is markdown in git; runtime
 state lives in SQLite. Administration is a CLI in the kubectl shape — there
 is no web panel. JavaScript is not required to read the pages.
 
-The site is a sample of the craft. Production moves on a `v*` tag, or
-Actions → Run workflow → `bump: patch|minor|major`. The job writes
-`Cargo.toml` and `Cargo.lock` from that version; do not edit them by
-hand. A push to `main` runs the suite and does not deploy.
+The site is a sample of the craft. `fix:` and `feat:` on `main` update a
+release PR ([release-plz](https://release-plz.dev)). Merging that PR
+tags `v*` and deploys. A push to `main` by itself does not.
 
 ## Workspace
 
@@ -46,13 +45,12 @@ cargo test --workspace
 
 ## Deploy
 
-Tag `vMAJOR.MINOR.PATCH` and push it, or run the `ci` workflow with
-`bump`. Either way CI sets the crate version (and the lockfile) before
-`kamal deploy --version <semver>`.
+[release-plz](https://release-plz.dev) reads conventional commits,
+bumps `Cargo.toml` / `Cargo.lock`, and opens a PR. Merge it; the tag
+`vMAJOR.MINOR.PATCH` is what Kamal deploys.
 
-```
-python3 scripts/version.py bump patch   # local; then commit and tag
-```
+`workflow_dispatch` on `ci` deploys the version already in the crate,
+without bumping.
 
 ## License
 

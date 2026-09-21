@@ -1,0 +1,24 @@
+[workspace]
+git_only = true
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+release_always = false
+
+[[package]]
+name = "hldr"
+version_group = "hldr"
+changelog_path = "CHANGELOG.md"
+
+[[package]]
+name = "hldr-core"
+version_group = "hldr"
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "hldr-server"
+version_group = "hldr"
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false

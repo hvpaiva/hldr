@@ -1,0 +1,66 @@
+name: deploy
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Semver without the v prefix. Empty reads Cargo.toml.
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  kamal:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://hvpaiva.dev
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: version
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "$GITHUB_SHA is not on origin/main" >&2
+            exit 1
+          fi
+          if [ -n "$INPUT" ]; then
+            ver="${INPUT#v}"
+          else
+            ver=$(awk '
+              /^\[workspace.package\]/ { p=1; next }
+              p && /^\[/ { exit }
+              p && /^version =/ {
+                gsub(/[" ]/, "")
+                split($0, a, "=")
+                print a[2]
+                exit
+              }
+            ' Cargo.toml)
+          fi
+          if [ -z "$ver" ]; then
+            echo "semver missing" >&2
+            exit 1
+          fi
+          echo "semver=$ver" >> "$GITHUB_OUTPUT"
+      - uses: ruby/setup-ruby@a0102e0972be65f351c307e2d64b9314a57c8073 # v1.324.0
+        with:
+          ruby-version: "3.3"
+      - run: gem install kamal -v 2.12.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
+      - uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.APOLLO_DEPLOY_KEY }}
+      - run: mkdir -p ~/.ssh && cp .kamal/known_hosts ~/.ssh/known_hosts
+      - run: kamal deploy --version "${{ steps.version.outputs.semver }}"
+        env:
+          KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
