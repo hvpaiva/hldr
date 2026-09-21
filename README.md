@@ -56,7 +56,15 @@ tag together. Other commits redeploy the current version. CI does not
 block it.
 
 `workflow_dispatch` on `deploy` republishes the version already in
-`Cargo.toml`.
+`Cargo.toml`. A run on `main` tags its version before deploying, so a
+rerun ships the same tag instead of bumping again.
+
+The `production` Environment holds the target: `DEPLOY_HOST`,
+`HLDR_ORIGIN`, `KAMAL_BIND_IPV4`, `KAMAL_BIND_IPV6`, and
+`DEPLOY_KNOWN_HOSTS`, the host keys in plain `known_hosts` form. The
+keys are pinned, not scanned: a scan at deploy time trusts whatever
+answers, and the hashed scan broke the deploy twice. Rotate them there
+when the host is rebuilt.
 
 ## License
 
