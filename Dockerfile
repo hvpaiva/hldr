@@ -23,7 +23,7 @@ RUN find crates -name '*.rs' -exec touch {} + \
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 hldr \
     && useradd --uid 1000 --gid 1000 --home-dir /app --no-create-home hldr \
@@ -40,6 +40,4 @@ ENV HLDR_ADDR=0.0.0.0:8080 \
     HLDR_ORIGIN=https://hvpaiva.dev \
     HLDR_LOG=info
 EXPOSE 8080
-HEALTHCHECK --interval=2s --timeout=2s --start-period=5s --retries=15 \
-    CMD curl -fsS http://127.0.0.1:8080/readyz || exit 1
 CMD ["hldr-server"]
