@@ -10,11 +10,6 @@ proxy:
   app_port: 8080
   healthcheck:
     path: /readyz
-  run:
-    bind_ips:
-      - <%= ENV.fetch("KAMAL_BIND_IPV4") %>
-      - "<%= ENV.fetch("KAMAL_BIND_IPV6") %>"
-    log_max_size: ""
 
 registry:
   server: ghcr.io
@@ -41,11 +36,6 @@ env:
 
 volumes:
   - hldr_data:/var/lib/hldr
-
-logging:
-  driver: json-file
-  options:
-    max-size: 10m
 
 aliases:
   shell: app exec --interactive --reuse "bash"
