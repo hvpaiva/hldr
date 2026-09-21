@@ -1,111 +1,145 @@
 name: deploy
 
+# A push to main that changes a deployable input is a release: check and
+# build run in parallel, Kamal deploys the image, and vX.Y.Z is tagged only
+# once production is healthy. Tags are the version history; nothing is
+# committed back. See .github/scripts/release-plan.
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Redeploy a released version (X.Y.Z) without building. Empty releases main.
+        type: string
+        required: false
+        default: ""
 
 concurrency:
-  group: hldr-deploy
+  group: production
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
-  kamal:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      deploy: ${{ steps.plan.outputs.deploy }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: git-cliff@2.14.2
+      - id: plan
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: .github/scripts/release-plan
+
+  check:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/hvpaiva/hldr:${{ needs.plan.outputs.version }}
+          build-args: |
+            HLDR_VERSION=${{ needs.plan.outputs.version }}
+            HLDR_REVISION=${{ github.sha }}
+          # Kamal refuses images without the service label.
+          labels: |
+            service=hldr
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.plan.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: [plan, check, build]
+    # A redeploy skips check and build; a release needs both.
+    if: >-
+      !cancelled() && needs.plan.outputs.deploy == 'true' &&
+      (needs.plan.outputs.release != 'true' ||
+      (needs.check.result == 'success' && needs.build.result == 'success'))
     runs-on: ubuntu-latest
     environment:
       name: production
       url: https://hvpaiva.dev
     permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@a0102e0972be65f351c307e2d64b9314a57c8073 # v1.324.0
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+      - uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+      - run: mkdir -p ~/.ssh && cat config/known_hosts >> ~/.ssh/known_hosts
+      # The host logs in to ghcr.io with this job's token, so it only reads packages.
+      - run: bundle exec kamal deploy --skip-push --version "$VERSION"
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    needs: [plan, deploy]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
       contents: write
-      packages: write
-      pull-requests: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          fetch-tags: true
-      - id: guard
+      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+        with:
+          tool: git-cliff@2.14.2
+      - env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          git fetch --quiet --tags origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "$GITHUB_SHA is not on origin/main" >&2
-            exit 1
-          fi
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        if: github.event_name == 'push'
-      - uses: cargo-bins/cargo-binstall@b874e25ea559687bec77e281e9b271aa1367b624 # v1.23.0
-        if: github.event_name == 'push'
-      - if: github.event_name == 'push'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          cargo-binstall release-plz@0.3.169 --force --strategies=crate-meta-data,compile --no-confirm
-          git checkout --force -B main origin/main
+          git cliff --unreleased --tag "v$VERSION" --strip all > "$RUNNER_TEMP/notes.md"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          release-plz update
-          if [[ -n "$(git status --porcelain)" ]]; then
-            git add -A
-            ver=$(awk '
-              /^\[workspace.package\]/ { p=1; next }
-              p && /^\[/ { exit }
-              p && /^version =/ {
-                gsub(/[" ]/, "")
-                split($0, a, "=")
-                print a[2]
-                exit
-              }
-            ' Cargo.toml)
-            git commit -m "chore: release v${ver}"
-            git fetch origin main
-            git rebase origin/main
-            git push origin HEAD:main
-          fi
-          release-plz release --git-token "$GITHUB_TOKEN" --forge github
-      - id: version
-        run: |
-          set -euo pipefail
-          ver=$(awk '
-            /^\[workspace.package\]/ { p=1; next }
-            p && /^\[/ { exit }
-            p && /^version =/ {
-              gsub(/[" ]/, "")
-              split($0, a, "=")
-              print a[2]
-              exit
-            }
-          ' Cargo.toml)
-          if [ -z "$ver" ]; then
-            echo "semver missing" >&2
-            exit 1
-          fi
-          echo "semver=$ver" >> "$GITHUB_OUTPUT"
-      - uses: ruby/setup-ruby@a0102e0972be65f351c307e2d64b9314a57c8073 # v1.324.0
-        with:
-          ruby-version: "3.3"
-      - run: gem install kamal -v 2.12.0
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
-      - uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.KAMAL_SSH_KEY }}
-      - env:
-          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          set -euo pipefail
-          if [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
-            echo "DEPLOY_KNOWN_HOSTS is empty in the production Environment" >&2
-            exit 1
-          fi
-          mkdir -p ~/.ssh
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-      - run: kamal deploy --version "${{ steps.version.outputs.semver }}"
-        env:
-          KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-          HLDR_ORIGIN: ${{ vars.HLDR_ORIGIN }}
-          KAMAL_BIND_IPV4: ${{ vars.KAMAL_BIND_IPV4 }}
-          KAMAL_BIND_IPV6: ${{ vars.KAMAL_BIND_IPV6 }}
+          { printf 'v%s\n\n' "$VERSION"; cat "$RUNNER_TEMP/notes.md"; } |
+            git tag -a "v$VERSION" -F - "$GITHUB_SHA"
+          git push origin "refs/tags/v$VERSION"
+          gh release create "v$VERSION" --verify-tag --title "v$VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md"

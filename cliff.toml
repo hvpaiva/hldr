@@ -1,0 +1,40 @@
+# Version bumps and release notes for vX.Y.Z tags.
+# .github/scripts/release-plan asks for the next version; the release job
+# writes these notes into the tag annotation and the GitHub Release.
+
+[changelog]
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{% if commit.breaking %}**breaking:** {% endif %}\
+{{ commit.message | upper_first }} \
+([{{ commit.id | truncate(length=7, end="") }}](https://github.com/hvpaiva/hldr/commit/{{ commit.id }}))\
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+protect_breaking_commits = true
+tag_pattern = 'v[0-9]+\.[0-9]+\.[0-9]+'
+sort_commits = "oldest"
+commit_parsers = [
+  { message = '^chore: release v', skip = true },
+  { message = '^feat', group = '<!-- 0 -->Features' },
+  { message = '^fix', group = '<!-- 1 -->Fixes' },
+  { message = '^perf', group = '<!-- 2 -->Performance' },
+  { message = '^refactor', group = '<!-- 3 -->Refactoring' },
+  { message = '^docs', group = '<!-- 4 -->Documentation' },
+  { message = '^test', group = '<!-- 5 -->Tests' },
+  { message = '^(build|ci)', group = '<!-- 6 -->Build and CI' },
+  { message = '.*', group = '<!-- 7 -->Other' },
+]
+
+[bump]
+initial_tag = "v0.1.0"
+features_always_bump_minor = true
+breaking_always_bump_major = true

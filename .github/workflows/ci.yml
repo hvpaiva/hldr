@@ -2,60 +2,18 @@ name: ci
 
 on:
   pull_request:
-  push:
-    branches: [main]
-
-concurrency:
-  group: hldr-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  workflow_call:
 
 permissions:
   contents: read
 
 jobs:
-  filter:
+  check:
     runs-on: ubuntu-latest
-    outputs:
-      check: ${{ steps.filter.outputs.check }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
-      - id: filter
-        env:
-          EVENT: ${{ github.event_name }}
-          BEFORE: ${{ github.event.before }}
-          AFTER: ${{ github.sha }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          check=false
-          if [ "$EVENT" = "pull_request" ]; then
-            range="${PR_BASE}...${PR_HEAD}"
-          elif [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            check=true
-            range=""
-          else
-            range="${BEFORE}...${AFTER}"
-          fi
-          if [ -n "$range" ]; then
-            while IFS= read -r f; do
-              case "$f" in
-                crates/*|Cargo.toml|Cargo.lock|migrations/*|deny.toml)
-                  check=true
-                  ;;
-              esac
-            done < <(git diff --name-only "$range")
-          fi
-          echo "check=$check" >> "$GITHUB_OUTPUT"
-
-  check:
-    needs: filter
-    if: needs.filter.outputs.check == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: rustfmt, clippy
@@ -64,3 +22,4 @@ jobs:
       - run: cargo clippy --all-targets --workspace -- -D warnings
       - run: cargo test --workspace
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+      - run: shellcheck .github/scripts/*
