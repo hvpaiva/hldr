@@ -61,18 +61,23 @@ pub struct ProjectSpec {
     pub tagline: String,
     pub status: ProjectStatus,
     /// Kept out of the public site while true.
+    #[serde(default)]
     pub draft: bool,
     /// Position among the highlights on the home page. Lower numbers come
     /// first; null leaves the project out of the highlights.
     pub highlight: Option<i64>,
     /// Free-form labels shown next to the project.
+    #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
     pub links: ProjectLinks,
     /// GitHub repository as `owner/name`, the key for repository metrics.
     pub github: Option<String>,
     /// Images attached to the project.
+    #[serde(default)]
     pub assets: Vec<AssetSpec>,
     /// Markdown below the frontmatter.
+    #[serde(default)]
     pub body: String,
 }
 
@@ -92,8 +97,10 @@ pub struct ProfileSpec {
     pub bio: String,
     /// Public contact address.
     pub email: Option<String>,
+    #[serde(default)]
     pub links: ProfileLinks,
     /// Markdown below the frontmatter: the about page.
+    #[serde(default)]
     pub body: String,
 }
 

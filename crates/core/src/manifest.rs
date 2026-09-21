@@ -631,6 +631,80 @@ Design to platform.
         assert!(err.to_string().contains("not a content file"), "{err}");
     }
 
+    /// The smallest file of each kind: its required fields and nothing else.
+    const MINIMAL: [(&str, &str); 4] = [
+        (
+            "projects/atlas.md",
+            "---\nkind: Project\ntitle: T\ntagline: L\nstatus: wip\n---\n",
+        ),
+        (
+            "profile.md",
+            "---\nkind: Profile\nname: N\nheadline: H\nbio: B\n---\n",
+        ),
+        (
+            "site.yaml",
+            "kind: Site\ntitle: T\ntheme: nord\ndescriptions:\n  projects: P\n  themes: T\nblog:\n  enabled: false\n",
+        ),
+        ("themes/nord.yaml", THEME),
+    ];
+
+    /// Top-level keys of a file's YAML, without `kind`.
+    fn keys(text: &str) -> Vec<String> {
+        let yaml = split_frontmatter(Path::new(""), text).map_or(text, |(front, _)| front);
+        yaml.lines()
+            .filter(|line| !line.starts_with([' ', '-']))
+            .filter_map(|line| line.split_once(':').map(|(key, _)| key.to_owned()))
+            .filter(|key| key != "kind")
+            .collect()
+    }
+
+    /// Without `key` and the lines nested under it.
+    fn without(text: &str, key: &str) -> String {
+        let mut out = String::new();
+        let mut skipping = false;
+        for line in text.split_inclusive('\n') {
+            if line.starts_with(&format!("{key}:")) {
+                skipping = true;
+            } else if !line.starts_with(' ') {
+                skipping = false;
+            }
+            if !skipping {
+                out.push_str(line);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_schema_requires_what_the_file_requires() {
+        let schemas = crate::api::schemas();
+        for (path, text) in MINIMAL {
+            let manifest = parse(Path::new(path), text.as_bytes()).unwrap();
+            let schema = &schemas[manifest.kind().as_str()];
+            let spec = schema["properties"]["spec"]["$ref"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("#/$defs/");
+            let mut required: Vec<String> = schema["$defs"][spec]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|name| name.as_str().unwrap().to_owned())
+                .collect();
+            let mut keys = keys(text);
+            required.sort();
+            keys.sort();
+            assert_eq!(required, keys, "{path}");
+            for key in &keys {
+                let missing = without(text, key);
+                assert!(
+                    parse(Path::new(path), missing.as_bytes()).is_err(),
+                    "{path} parses without {key}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn requires_frontmatter() {
         assert!(project("no frontmatter").is_err());
