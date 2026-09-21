@@ -4,9 +4,6 @@
 target
 result
 result-*
-nix
-flake.nix
-flake.lock
 deny.toml
 *.db
 *.db-shm

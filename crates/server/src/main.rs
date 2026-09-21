@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -126,7 +127,39 @@ fn router(state: AppState) -> Router {
         .route("/api/v1/posts/{slug}", get(api_post))
         .fallback(not_found)
         .layer(TraceLayer::new_for_http())
+        .layer(middleware::from_fn(security_headers))
         .with_state(state)
+}
+
+async fn security_headers(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=(), payment=()"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; \
+             base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests",
+        ),
+    );
+    response
 }
 
 impl Site {

@@ -3,7 +3,7 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main, staging]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -25,8 +25,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   build:
-    needs: check
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -49,12 +48,12 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    needs: build
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging'
+    needs: [check, build]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
-      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
-      url: ${{ github.ref == 'refs/heads/main' && 'https://hvpaiva.dev' || 'https://hldr.apollo.hvpaiva.dev' }}
+      name: production
+      url: https://hvpaiva.dev
     permissions:
       contents: read
       packages: read
@@ -75,9 +74,4 @@ jobs:
       - name: Deploy
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          dest=()
-          if [ "$GITHUB_REF" = "refs/heads/staging" ]; then
-            dest=(-d staging)
-          fi
-          kamal deploy "${dest[@]}" --skip-push --version "$GITHUB_SHA"
+        run: kamal deploy --skip-push --version "$GITHUB_SHA"

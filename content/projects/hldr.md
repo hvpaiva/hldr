@@ -21,15 +21,10 @@ required to read it. `curl hvpaiva.dev` is a first-class interface.
 ## Why it exists
 
 A site that is also a sample of the craft. If the headers are sloppy or
-the deploy is a ritual, it contradicts the résumé. The host is rebuilt
-from a flake; a merge to `main` is what turns production.
+the deploy is a ritual, it contradicts the résumé. A merge to `main` is
+what turns production.
 
 ## Decisions
-
-The app and the machine are different repositories. hldr is public and
-describes the program. apollo is private and describes the VPS. hldr does
-not import apollo. A push to `staging` deploys the Tailscale preview; a
-merge to `main` deploys hvpaiva.dev.
 
 SQLite opened in WAL, indexed on boot. Desired state is files; observed
 state is the database. YAML is `serde-saphyr` because the old serde_yaml

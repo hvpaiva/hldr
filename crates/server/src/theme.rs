@@ -635,7 +635,7 @@ impl Theme {
 
     pub fn cookie_header(self) -> String {
         format!(
-            "{COOKIE}={}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly",
+            "{COOKIE}={}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly; Secure",
             self.slug
         )
     }
@@ -701,6 +701,14 @@ mod tests {
         }
         assert!(Theme::get("not-a-theme").is_none());
         assert_eq!(THEMES.len(), 33);
+    }
+
+    #[test]
+    fn cookie_is_httponly_secure() {
+        let header = Theme::fallback().cookie_header();
+        assert!(header.contains("HttpOnly"));
+        assert!(header.contains("Secure"));
+        assert!(header.contains("SameSite=Lax"));
     }
 
     #[test]
