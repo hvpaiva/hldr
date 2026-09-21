@@ -24,31 +24,8 @@ jobs:
       - run: cargo test --workspace
       - uses: EmbarkStudios/cargo-deny-action@v2
 
-  build:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ghcr.io/hvpaiva/hldr:${{ github.sha }}
-          labels: service=hldr
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
   deploy:
-    needs: [check, build]
+    needs: check
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
@@ -56,22 +33,19 @@ jobs:
       url: https://hvpaiva.dev
     permissions:
       contents: read
-      packages: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
       - run: gem install kamal -v 2.12.0
-      - name: SSH key
-        env:
-          APOLLO_DEPLOY_KEY: ${{ secrets.APOLLO_DEPLOY_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$APOLLO_DEPLOY_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          cp .kamal/known_hosts ~/.ssh/known_hosts
-      - name: Deploy
+      - uses: docker/setup-buildx-action@v3
+      - uses: crazy-max/ghaction-github-runtime@v3
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.APOLLO_DEPLOY_KEY }}
+      - run: mkdir -p ~/.ssh && cp .kamal/known_hosts ~/.ssh/known_hosts
+      - run: kamal deploy
         env:
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: kamal deploy --skip-push --version "$GITHUB_SHA"

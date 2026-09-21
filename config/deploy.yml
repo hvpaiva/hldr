@@ -2,9 +2,7 @@ service: hldr
 image: hvpaiva/hldr
 
 servers:
-  web:
-    hosts:
-      - 72.61.46.31
+  - hvpaiva.dev
 
 proxy:
   ssl: true
@@ -17,11 +15,6 @@ proxy:
       - 72.61.46.31
       - "2a02:4780:66:5b90::1"
     log_max_size: ""
-
-logging:
-  driver: json-file
-  options:
-    max-size: 10m
 
 registry:
   server: ghcr.io
@@ -37,8 +30,6 @@ builder:
 
 ssh:
   user: hvpaiva
-  keys:
-    - ~/.ssh/id_ed25519
 
 env:
   clear:
@@ -50,3 +41,14 @@ env:
 
 volumes:
   - /var/lib/hldr:/var/lib/hldr
+
+logging:
+  driver: json-file
+  options:
+    max-size: 10m
+
+aliases:
+  shell: app exec --interactive --reuse "bash"
+  logs: app logs -f
+
+minimum_version: 2.12.0
