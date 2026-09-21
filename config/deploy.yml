@@ -1,3 +1,4 @@
+<% domain = "hvpaiva.dev" %>
 service: hldr
 image: hvpaiva/hldr
 
@@ -6,7 +7,7 @@ servers:
 
 proxy:
   ssl: true
-  host: hvpaiva.dev
+  host: <%= domain %>
   app_port: 8080
   healthcheck:
     path: /readyz
@@ -19,20 +20,13 @@ registry:
 
 builder:
   arch: amd64
-  cache:
-    type: gha
-    options: mode=max
 
 ssh:
   user: deploy
 
 env:
   clear:
-    HLDR_ADDR: 0.0.0.0:8080
-    HLDR_CONTENT_DIR: /app/content
-    HLDR_DATABASE: /var/lib/hldr/hldr.db
-    HLDR_ORIGIN: <%= ENV.fetch("HLDR_ORIGIN") %>
-    HLDR_LOG: info
+    HLDR_ORIGIN: https://<%= domain %>
 
 volumes:
   - hldr_data:/var/lib/hldr
