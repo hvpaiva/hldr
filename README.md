@@ -64,9 +64,6 @@ an error. `GET /api/v1/sync` shows the sync state; `POST` runs a sync and
 answers once it is done: 422 when the content is invalid, 502 when it
 could not be fetched.
 
-```
-cargo run -p hldr -- version
-```
 
 ```
 docker build -t hldr .
@@ -75,6 +72,34 @@ docker run --rm -p 8080:8080 -e HLDR_CONTENT_REPO=hvpaiva/hldr-content hldr
 
 Outside the release pipeline the version is `dev`. Cargo manifests carry
 no version; `HLDR_VERSION` and `HLDR_REVISION` stamp it at build time.
+
+## CLI
+
+`hldr` reads the private API, so it works from the tailnet. It finds the
+server in `--server`, then `HLDR_SERVER`, then `$XDG_CONFIG_HOME/hldr/config.yaml`
+(`HLDR_CONFIG` names another file):
+
+```yaml
+server: https://apollo.<tailnet>.ts.net:8443
+```
+
+```
+cargo install --path crates/cli
+hldr api-resources
+hldr get projects -o wide
+hldr get theme nord retro-82 -o yaml
+hldr get p -o jsonpath='{.items[*].metadata.name}'
+hldr describe project hldr
+hldr explain project.spec.status
+hldr version
+```
+
+Resource types, their short names and their table columns come from the
+server (`/api/v1/api-resources`), cached per server under
+`$XDG_CACHE_HOME/hldr/` for six hours and refreshed at once for a type the
+cache does not know. `-o` takes `table`, `wide`, `json`, `yaml`, `name`,
+`jsonpath=TEMPLATE` (kubectl templates without `range`) and
+`custom-columns=HEADER:PATH,...`.
 
 ## Test
 

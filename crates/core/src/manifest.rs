@@ -130,13 +130,18 @@ pub fn path(kind: Kind, name: Option<&str>) -> String {
     }
 }
 
-fn validate_name<'a>(path: &Path, name: &'a str) -> Result<&'a str, Error> {
-    let valid = !name.is_empty()
+/// Whether `name` can name a resource: `[a-z0-9][a-z0-9-]*`. Names end up
+/// in file paths and URL paths, so nothing else is accepted.
+pub fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
         && name
             .chars()
             .enumerate()
-            .all(|(i, c)| c.is_ascii_lowercase() || c.is_ascii_digit() || (i > 0 && c == '-'));
-    if valid {
+            .all(|(i, c)| c.is_ascii_lowercase() || c.is_ascii_digit() || (i > 0 && c == '-'))
+}
+
+fn validate_name<'a>(path: &Path, name: &'a str) -> Result<&'a str, Error> {
+    if is_valid_name(name) {
         Ok(name)
     } else {
         Err(Error::file(path, "name must match [a-z0-9][a-z0-9-]*"))
