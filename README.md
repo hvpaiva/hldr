@@ -49,7 +49,7 @@ cargo test --workspace
 bumps `Cargo.toml` / `Cargo.lock`, and opens a PR. Merge it; the tag
 `vMAJOR.MINOR.PATCH` is what Kamal deploys.
 
-`workflow_dispatch` on `ci` deploys the version already in the crate,
+`workflow_dispatch` on `deploy` deploys the version already in the crate,
 without bumping.
 
 ## License

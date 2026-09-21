@@ -4,19 +4,19 @@ on:
   pull_request:
   push:
     branches: [main]
-    tags: ["v*.*.*"]
-  workflow_dispatch:
 
 concurrency:
   group: hldr-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
   filter:
     runs-on: ubuntu-latest
     outputs:
       check: ${{ steps.filter.outputs.check }}
-      deploy: ${{ steps.filter.outputs.deploy }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -24,7 +24,6 @@ jobs:
       - id: filter
         env:
           EVENT: ${{ github.event_name }}
-          REF: ${{ github.ref }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
@@ -32,31 +31,24 @@ jobs:
         run: |
           set -euo pipefail
           check=false
-          deploy=false
-          if [ "$EVENT" = "workflow_dispatch" ] || [[ "$REF" == refs/tags/v* ]]; then
+          if [ "$EVENT" = "pull_request" ]; then
+            range="${PR_BASE}...${PR_HEAD}"
+          elif [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             check=true
-            deploy=true
+            range=""
           else
-            if [ "$EVENT" = "pull_request" ]; then
-              range="${PR_BASE}...${PR_HEAD}"
-            elif [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-              check=true
-              range=""
-            else
-              range="${BEFORE}...${AFTER}"
-            fi
-            if [ -n "$range" ]; then
-              while IFS= read -r f; do
-                case "$f" in
-                  crates/*|Cargo.toml|Cargo.lock|migrations/*|deny.toml)
-                    check=true
-                    ;;
-                esac
-              done < <(git diff --name-only "$range")
-            fi
+            range="${BEFORE}...${AFTER}"
+          fi
+          if [ -n "$range" ]; then
+            while IFS= read -r f; do
+              case "$f" in
+                crates/*|Cargo.toml|Cargo.lock|migrations/*|deny.toml)
+                  check=true
+                  ;;
+              esac
+            done < <(git diff --name-only "$range")
           fi
           echo "check=$check" >> "$GITHUB_OUTPUT"
-          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
 
   check:
     needs: filter
@@ -72,19 +64,3 @@ jobs:
       - run: cargo clippy --all-targets --workspace -- -D warnings
       - run: cargo test --workspace
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
-
-  deploy:
-    needs: [filter, check]
-    if: |
-      always() &&
-      !cancelled() &&
-      needs.filter.result == 'success' &&
-      needs.filter.outputs.deploy == 'true' &&
-      (needs.check.result == 'success' || needs.check.result == 'skipped') &&
-      github.event_name != 'pull_request' &&
-      (startsWith(github.ref, 'refs/tags/v') ||
-        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
-    uses: ./.github/workflows/deploy.yml
-    with:
-      version: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
-    secrets: inherit

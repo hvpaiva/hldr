@@ -8,6 +8,13 @@ on:
         type: string
         required: false
         default: ""
+  workflow_dispatch:
+  push:
+    tags: ["v*.*.*"]
+
+concurrency:
+  group: hldr-deploy
+  cancel-in-progress: false
 
 jobs:
   kamal:
@@ -25,6 +32,8 @@ jobs:
       - id: version
         env:
           INPUT: ${{ inputs.version }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           git fetch --quiet origin main
@@ -32,7 +41,9 @@ jobs:
             echo "$GITHUB_SHA is not on origin/main" >&2
             exit 1
           fi
-          if [ -n "$INPUT" ]; then
+          if [ "$EVENT" = "push" ] && [[ "$REF" == refs/tags/v* ]]; then
+            ver="${REF#refs/tags/v}"
+          elif [ -n "$INPUT" ]; then
             ver="${INPUT#v}"
           else
             ver=$(awk '
