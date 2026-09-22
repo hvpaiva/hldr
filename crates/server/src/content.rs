@@ -17,7 +17,7 @@ use hldr_core::events::NewEvent;
 use hldr_core::github::RateLimit;
 use hldr_core::{Db, SyncReport, store};
 
-const GITHUB_API: &str = "https://api.github.com";
+pub const GITHUB_API: &str = "https://api.github.com";
 const DEFAULT_REF: &str = "main";
 const DEFAULT_POLL: Duration = Duration::from_secs(300);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);

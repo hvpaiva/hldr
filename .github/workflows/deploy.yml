@@ -166,6 +166,7 @@ jobs:
         env:
           VERSION: ${{ needs.plan.outputs.version }}
           KAMAL_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          HLDR_METRICS_TOKEN: ${{ secrets.HLDR_METRICS_TOKEN }}
 
   release:
     needs: [plan, deploy]

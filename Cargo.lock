@@ -814,6 +814,7 @@ name = "hldr-server"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "flate2",
  "hldr-core",
  "http-body-util",

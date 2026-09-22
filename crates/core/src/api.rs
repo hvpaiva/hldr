@@ -261,6 +261,24 @@ pub struct ServerStatus {
     /// The GitHub rate limit as its last answer reported it; null before the
     /// first request, and for content read from a directory.
     pub github: Option<GitHubQuota>,
+    /// The metrics backup; null when none is configured.
+    pub backup: Option<BackupState>,
+}
+
+/// Where the metrics backup stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BackupState {
+    /// The repository, such as `hvpaiva/hldr-metrics`.
+    pub repository: String,
+    /// The latest closed day it holds.
+    pub last_day: Option<String>,
+    /// Closed days not uploaded yet.
+    pub pending: u64,
+    /// When the token stops working, ISO-8601 UTC, as GitHub last reported
+    /// it; null before the first answer.
+    pub token_expires_at: Option<String>,
+    /// Why the last upload or restore failed; null once one succeeds.
+    pub last_error: Option<String>,
 }
 
 /// Where the served content stands.

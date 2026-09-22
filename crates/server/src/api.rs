@@ -290,6 +290,10 @@ async fn server(State(state): State<AppState>) -> Result<Response, ApiError> {
                 wal_bytes: size.wal_bytes,
             },
             github: state.syncer.quota(),
+            backup: match &state.backup {
+                Some(backup) => Some(backup.state().await?),
+                None => None,
+            },
         },
     };
     Ok(Json(server).into_response())

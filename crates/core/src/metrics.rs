@@ -116,7 +116,7 @@ impl Db {
         self.flush_metrics_at(batch, Utc::now()).await
     }
 
-    async fn flush_metrics_at(
+    pub(crate) async fn flush_metrics_at(
         &self,
         batch: &Batch,
         now: DateTime<Utc>,

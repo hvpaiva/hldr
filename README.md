@@ -100,8 +100,20 @@ deletes its hashes and salt, so nobody can be followed across days, and
 visitors over a period are the sum of each day's. Counts are flushed every
 minute and on shutdown; both servers of a deploy can flush into the same
 database. `GET /api/v1/metrics/daily`, `/pages` and `/referrers`, with
-`?since=7d`, `30d` or `all`, are private too. Unlike content, metrics are
-not rebuilt from git: losing the database loses them.
+`?since=7d`, `30d` or `all`, are private too.
+
+Unlike content, metrics are not rebuilt from git, so the server backs up
+every closed day to a private repository, `HLDR_METRICS_REPO`, as
+`days/YYYY/MM/YYYY-MM-DD.json`: counts only, never a hash, salt, address or
+user agent. It writes with `HLDR_METRICS_TOKEN`, a fine-grained token with
+Contents read and write on that repository alone; without both there is no
+backup. Soon after a day closes the server uploads it, leaving a file with
+the same bytes alone, so both servers of a deploy can try; a failure is a
+`BackupFailed` event, retried an hour later. A database that was never
+backed up, such as a new volume, is first restored from the repository
+(`Restored`). Losing the database then loses at most the current day. The
+token's expiry, from GitHub's answers, shows in `hldr describe server`,
+and from a month before it a `TokenExpiring` warning is written each day.
 
 
 ```

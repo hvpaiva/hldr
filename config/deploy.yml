@@ -30,6 +30,9 @@ env:
     HLDR_CONTENT_REPO: hvpaiva/hldr-content
     # apollo serves this socket to the tailnet at :8443, and nowhere else.
     HLDR_API_ADDR: unix:/run/tailnet/8443.sock
+    HLDR_METRICS_REPO: hvpaiva/hldr-metrics
+  secret:
+    - HLDR_METRICS_TOKEN
 
 volumes:
   - hldr_data:/var/lib/hldr

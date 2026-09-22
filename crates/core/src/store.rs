@@ -386,6 +386,28 @@ pub fn from_unix(seconds: i64) -> Option<String> {
     chrono::DateTime::from_timestamp(seconds, 0).map(rfc3339)
 }
 
+/// A time as GitHub writes a token's expiry, such as `2027-09-22 12:00:00
+/// UTC` or `2027-09-22 12:00:00 +0000`, as [`now_rfc3339`] writes times.
+pub fn from_github_time(text: &str) -> Option<String> {
+    let text = text.trim();
+    let at = match text.strip_suffix(" UTC") {
+        Some(naive) => chrono::NaiveDateTime::parse_from_str(naive, "%Y-%m-%d %H:%M:%S")
+            .ok()?
+            .and_utc(),
+        None => chrono::DateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S %z")
+            .ok()?
+            .to_utc(),
+    };
+    Some(rfc3339(at))
+}
+
+/// Whether `at`, as [`now_rfc3339`] writes times, is less than `days` away
+/// or already past; a time that does not parse is not.
+pub fn within_days(at: &str, days: i64) -> bool {
+    chrono::DateTime::parse_from_rfc3339(at)
+        .is_ok_and(|at| at.to_utc() - chrono::Utc::now() < chrono::TimeDelta::days(days))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +436,25 @@ mod tests {
         let db = Db::open(dir.path().join("hldr.db")).await.unwrap();
         index::sync(db.pool(), &content).await.unwrap();
         (dir, db)
+    }
+
+    #[test]
+    fn reads_github_token_expiries() {
+        assert_eq!(
+            from_github_time("2027-09-22 12:00:00 UTC").as_deref(),
+            Some("2027-09-22T12:00:00Z")
+        );
+        assert_eq!(
+            from_github_time("2027-09-22 09:00:00 -0300").as_deref(),
+            Some("2027-09-22T12:00:00Z")
+        );
+        assert!(from_github_time("next year").is_none());
+
+        let in_days = |days| rfc3339(chrono::Utc::now() + chrono::TimeDelta::days(days));
+        assert!(within_days(&in_days(29), 30));
+        assert!(within_days(&in_days(-1), 30), "past");
+        assert!(!within_days(&in_days(31), 30));
+        assert!(!within_days("soon", 30));
     }
 
     #[tokio::test]

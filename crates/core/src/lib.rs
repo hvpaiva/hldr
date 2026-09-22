@@ -2,6 +2,8 @@ use serde::Serialize;
 
 pub mod api;
 #[cfg(feature = "store")]
+pub mod backup;
+#[cfg(feature = "store")]
 pub mod db;
 #[cfg(feature = "store")]
 pub mod events;

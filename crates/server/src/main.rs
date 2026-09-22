@@ -15,6 +15,7 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
 mod api;
+mod backup;
 mod content;
 mod html;
 mod listen;
@@ -37,6 +38,7 @@ struct AppState {
     syncer: Arc<content::Syncer>,
     started: Started,
     metrics: Arc<metrics::Metrics>,
+    backup: Option<Arc<backup::Backup>>,
 }
 
 /// When this process started, for its uptime.
@@ -130,12 +132,19 @@ async fn main() {
         Arc::clone(&metrics),
         metrics::FLUSH_EVERY,
     ));
+    let backup = backup::Backup::from_env(db.clone())
+        .unwrap_or_else(|err| panic!("{err}"))
+        .map(Arc::new);
+    if let Some(backup) = &backup {
+        tokio::spawn(backup::run_every(Arc::clone(backup), backup::PASS_EVERY));
+    }
     let state = AppState {
         db: db.clone(),
         site,
         syncer,
         started,
         metrics: Arc::clone(&metrics),
+        backup,
     };
     let site = site_router(state.clone());
     let private = api::router(state);
@@ -787,6 +796,7 @@ mod tests {
             dir,
             AppState {
                 metrics: Arc::new(metrics::Metrics::new(db.clone(), &site.host)),
+                backup: None,
                 db,
                 site,
                 syncer,
@@ -1386,6 +1396,7 @@ mod tests {
             status["github"].is_null(),
             "a directory asks GitHub nothing"
         );
+        assert!(status["backup"].is_null(), "no metrics backup configured");
 
         let (status, _, _) = call(api::router(state.clone()), "/api/v1/server/x").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
