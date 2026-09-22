@@ -64,7 +64,8 @@ struct Cli {
 
 impl Cli {
     /// The pager, when paging is asked for and stdout is a terminal. `edit`
-    /// is never paged: the editor has the terminal.
+    /// is never paged: the editor has the terminal; nor is a watch, which
+    /// never ends.
     fn pager(&self, env: &Env, config: &Config) -> Result<Option<Vec<String>>> {
         let settings = pager::Settings {
             no_paging: self.no_paging,
@@ -76,7 +77,12 @@ impl Cli {
             path: env.path.as_deref(),
         };
         let command = settings.command()?;
-        let paged = io::stdout().is_terminal() && !matches!(self.command, Command::Edit(_));
+        let unpaged = match &self.command {
+            Command::Edit(_) => true,
+            Command::Get(args) => args.watching(),
+            _ => false,
+        };
+        let paged = io::stdout().is_terminal() && !unpaged;
         Ok(command.filter(|_| paged))
     }
 }

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum::Router;
+use axum::extract::RawQuery;
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -18,6 +19,10 @@ pub struct Stub {
     pub version: Arc<std::sync::Mutex<String>>,
     /// What `/api/v1/sync` reports as the served revision.
     pub revision: Arc<std::sync::Mutex<String>>,
+    /// What `/api/v1/events` answers, one call each; null answers 500.
+    events: Arc<std::sync::Mutex<std::collections::VecDeque<Value>>>,
+    /// The query string of every call to `/api/v1/events`.
+    event_queries: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 pub fn resource(name: &str, singular: &str, kind: &str) -> Value {
@@ -60,6 +65,14 @@ impl Stub {
         *self.revision.lock().unwrap() = revision.to_owned();
     }
 
+    pub fn script_events(&self, answers: impl IntoIterator<Item = Value>) {
+        self.events.lock().unwrap().extend(answers);
+    }
+
+    pub fn event_queries(&self) -> Vec<String> {
+        self.event_queries.lock().unwrap().clone()
+    }
+
     /// Serves the stub; see [`spawn`].
     pub fn serve(&self) -> String {
         let stub = self.clone();
@@ -95,6 +108,22 @@ impl Stub {
                 }),
             )
             .route("/api/v1/schema", get(|| async { axum::Json(json!({"Project": {}})) }))
+            .route("/api/v1/events", {
+                let events = Arc::clone(&self.events);
+                let queries = Arc::clone(&self.event_queries);
+                get(move |RawQuery(query): RawQuery| {
+                    queries.lock().unwrap().push(query.unwrap_or_default());
+                    let answer = events.lock().unwrap().pop_front();
+                    async move {
+                        match answer {
+                            Some(Value::Null) | None => {
+                                (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+                            }
+                            Some(list) => axum::Json(list).into_response(),
+                        }
+                    }
+                })
+            })
             .route(
                 "/api/v1/projects/atlas",
                 get(|| async { axum::Json(json!({"kind": "Project", "metadata": {"name": "atlas"}})) }),

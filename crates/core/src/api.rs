@@ -462,22 +462,7 @@ pub fn resources(types: &[PageType<'_>]) -> List<ApiResource> {
                 updated,
             ],
         ),
-        kept(
-            "events",
-            "Event",
-            &["ev"],
-            false,
-            &["get", "explain", "watch"],
-            &[
-                ("LAST SEEN", ".last_at", false),
-                ("TYPE", ".type", false),
-                ("REASON", ".reason", false),
-                ("COUNT", ".count", false),
-                ("MESSAGE", ".message", false),
-                ("FIRST SEEN", ".first_at", true),
-                ("REVISION", ".revision", true),
-            ],
-        ),
+        events(),
         kept(
             "server",
             "Server",
@@ -550,6 +535,33 @@ fn builtin(
         },
         columns: columns(printed),
     }
+}
+
+/// Events, their type colored as a status is: `Normal` good, `Warning` not.
+fn events() -> ApiResource {
+    let mut events = kept(
+        "events",
+        "Event",
+        &["ev"],
+        false,
+        &["get", "explain", "watch"],
+        &[
+            ("LAST SEEN", ".last_at", false),
+            ("TYPE", ".type", false),
+            ("REASON", ".reason", false),
+            ("COUNT", ".count", false),
+            ("MESSAGE", ".message", false),
+            ("FIRST SEEN", ".first_at", true),
+            ("REVISION", ".revision", true),
+        ],
+    );
+    for column in events.columns.iter_mut().filter(|c| c.name == "TYPE") {
+        column.values = [EventType::Normal, EventType::Warning]
+            .map(|kind| kind.as_str().to_owned())
+            .to_vec();
+        column.ok = vec![EventType::Normal.as_str().to_owned()];
+    }
+    events
 }
 
 /// A resource the server keeps itself: read-only, with no file behind it.

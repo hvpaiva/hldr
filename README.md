@@ -79,6 +79,16 @@ could not be fetched. The server reads GitHub anonymously, 60 requests an
 hour per IP; a spent limit is recorded with the time it resets, and
 `HLDR_GITHUB_TOKEN` (read-only) raises it.
 
+The server records what happens to it as events: `Started` and `Stopped`,
+`Synced` when what it serves changes, `SyncFailed` and `RateLimited`. The
+same event again right after itself is counted rather than added, and
+events are kept 30 days in the database; unlike content, they are not
+rebuilt from git. `GET /api/v1/events` lists them oldest first with the
+stream position it read them at, and `?after=SEQ` answers only what was
+written after it, updates included. `GET /api/v1/server` reports the
+version, uptime, content state, database size and the GitHub rate limit
+as its last answer reported it. Both are private: the site serves neither.
+
 
 ```
 docker build -t hldr .
@@ -118,7 +128,13 @@ hldr get p -o jsonpath='{.items[*].metadata.name}'
 hldr describe project hldr
 hldr explain project.metadata.status
 hldr version
+hldr get events --watch             # list, then print what happens
+hldr describe server                # uptime, content, database, GitHub quota, events
 ```
+
+`--watch` asks for what changed every two seconds and never pages; a
+server that stops answering, as during a deploy, is reported once and
+waited for.
 
 Writes go to the content repository the server syncs from, which the
 server reports, so the CLI can never write where the site does not read.

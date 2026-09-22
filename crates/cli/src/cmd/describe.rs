@@ -10,6 +10,7 @@ use crate::client::Client;
 use crate::color::{Painter, Role, Term};
 use crate::discovery::Catalog;
 use crate::print::jsonpath::plain;
+use crate::print::{self, Fetched, Output};
 
 #[derive(Debug, clap::Args)]
 pub struct Args {
@@ -34,9 +35,51 @@ pub fn run(
             }
             first = false;
             write!(out, "{}", describe(term.out(), item))?;
+            if item["kind"] == "Server" {
+                write!(out, "{}", events(term.out(), client, catalog)?)?;
+            }
         }
     }
     Ok(complete)
+}
+
+/// How many of the latest events `describe server` shows.
+const RECENT_EVENTS: usize = 10;
+
+/// The latest events, as `kubectl describe` ends with them, in the table
+/// and colors of `hldr get events`.
+fn events(paint: Painter<'_>, client: &Client, catalog: &mut Catalog<'_>) -> Result<String> {
+    let resource = catalog.resolve("events")?;
+    let mut list = client.get(&format!("/api/v1/{}", resource.name))?;
+    let label = format!("{}:", paint.nth(Role::DescribeKey, 0, "Events"));
+    let items = list["items"]
+        .as_array_mut()
+        .map(std::mem::take)
+        .unwrap_or_default();
+    if items.is_empty() {
+        return Ok(format!(
+            "{label}  {}\n",
+            paint.paint(Role::DataNull, "<none>")
+        ));
+    }
+    let recent = items[items.len().saturating_sub(RECENT_EVENTS)..].to_vec();
+    list["items"] = Value::Array(recent);
+    let mut table = Vec::new();
+    print::print(
+        &mut table,
+        paint,
+        &[Fetched {
+            resource,
+            value: list,
+        }],
+        &Output::Table,
+        false,
+    )?;
+    let mut out = format!("{label}\n");
+    for line in String::from_utf8_lossy(&table).lines() {
+        out.push_str(&format!("  {line}\n"));
+    }
+    Ok(out)
 }
 
 pub fn describe(paint: Painter<'_>, item: &Value) -> String {
@@ -46,7 +89,10 @@ pub fn describe(paint: Painter<'_>, item: &Value) -> String {
     }
     let after_name = usize::from(item["metadata"]["name"].is_string());
     fields.insert(after_name, ("Kind".to_owned(), &item["kind"]));
-    fields.push(("Spec".to_owned(), &item["spec"]));
+    // What the server keeps, such as the server itself, declares no spec.
+    if item.get("spec").is_some() {
+        fields.push(("Spec".to_owned(), &item["spec"]));
+    }
     if item["status"]
         .as_object()
         .is_some_and(|status| !status.is_empty())
@@ -216,6 +262,72 @@ Spec:
             "{}",
             describe(Term::plain().out(), &site)
         );
+    }
+
+    #[test]
+    fn the_server_has_a_status_and_no_spec() {
+        let server = json!({
+            "kind": "Server", "metadata": {},
+            "status": {"version": "4.2.0", "uptime": "3h2m", "github": null,
+                       "database": {"bytes": 4096, "wal_bytes": 0}},
+        });
+        assert_eq!(
+            describe(Term::plain().out(), &server),
+            "\
+Kind:     Server
+Status:
+  Version:    4.2.0
+  Uptime:     3h2m
+  Github:     <none>
+  Database:
+    Bytes:       4096
+    Wal Bytes:   0
+"
+        );
+    }
+
+    fn events_stub() -> crate::stub::Stub {
+        let stub = crate::stub::Stub::default();
+        let mut events = crate::stub::resource("events", "event", "Event");
+        events["columns"] = json!([
+            {"name": "TYPE", "json_path": ".type", "wide": false,
+             "values": ["Normal", "Warning"], "ok": ["Normal"]},
+            {"name": "REASON", "json_path": ".reason", "wide": false},
+            {"name": "FIRST SEEN", "json_path": ".first_at", "wide": true},
+        ]);
+        stub.extra.lock().unwrap().push(events);
+        stub
+    }
+
+    #[test]
+    fn the_server_ends_with_its_latest_events() {
+        let stub = events_stub();
+        let items: Vec<Value> = (1..=12)
+            .map(|n| {
+                json!({"kind": "Event", "type": if n == 12 { "Warning" } else { "Normal" },
+                            "reason": format!("R{n}"), "first_at": "t"})
+            })
+            .collect();
+        stub.script_events([json!({"kind": "EventList", "seq": 12, "items": items})]);
+        let client = Client::new(stub.serve());
+        let mut catalog = Catalog::new(&client, None);
+        let text = events(Term::plain().out(), &client, &mut catalog).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "Events:");
+        assert_eq!(lines[1], "  TYPE      REASON");
+        assert_eq!(lines[2], "  Normal    R3");
+        assert_eq!(lines[11], "  Warning   R12");
+        assert_eq!(lines.len(), 2 + RECENT_EVENTS);
+    }
+
+    #[test]
+    fn a_server_without_events_says_so() {
+        let stub = events_stub();
+        stub.script_events([json!({"kind": "EventList", "seq": 0, "items": []})]);
+        let client = Client::new(stub.serve());
+        let mut catalog = Catalog::new(&client, None);
+        let text = events(Term::plain().out(), &client, &mut catalog).unwrap();
+        assert_eq!(text, "Events:  <none>\n");
     }
 
     #[test]
