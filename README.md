@@ -6,9 +6,11 @@ HTML in a browser. JavaScript is not required to read the pages.
 Administration is a CLI in the kubectl shape; there is no web panel.
 
 Git is the only durable store. Content and site configuration live in
-[hldr-content](https://github.com/hvpaiva/hldr-content): prose as markdown
-under a frontmatter, configuration as YAML, every file declaring its
-`kind`. The server pulls that repository and materializes one revision of
+[hldr-content](https://github.com/hvpaiva/hldr-content) as YAML manifests
+in the kubectl shape, `kind`, `metadata` and `spec`, and the markdown each
+page names beside its manifest. Pages, the file tree and page types are
+content too: a new type, such as a blog's posts, is a manifest, not a
+release. The server pulls that repository and materializes one revision of
 it into SQLite, which the site reads. Deleting the database loses nothing:
 the next sync rebuilds it.
 
@@ -23,7 +25,7 @@ production is healthy. The tag is the version; nothing is committed back.
 ## Workspace
 
 ```
-crates/core       domain, SQLite, markdown
+crates/core       manifests, templates, SQLite
 crates/server     hldr-server
 crates/cli        hldr
 migrations/       sqlx
@@ -114,19 +116,24 @@ hldr get projects -o wide
 hldr get theme nord retro-82 -o yaml
 hldr get p -o jsonpath='{.items[*].metadata.name}'
 hldr describe project hldr
-hldr explain project.spec.status
+hldr explain project.metadata.status
 hldr version
 ```
 
 Writes go to the content repository the server syncs from, which the
-server reports, so the CLI can never write where the site does not read:
+server reports, so the CLI can never write where the site does not read.
+A page's markdown travels with its manifest: `apply` commits the one
+beside it, `delete` removes both, and `edit --content` opens the markdown
+instead of the manifest:
 
 ```
 hldr edit project hldr              # $HLDR_EDITOR, $VISUAL or $EDITOR
-hldr apply -f atlas.md              # kind from the file, name from its file name
+hldr edit page about --content
+hldr apply -f projects/atlas.yaml   # kind from the file, name from its file name
 hldr apply -f ~/dev/hldr-content    # a checkout, file by file
-hldr diff -f atlas.md               # exit 1 when applying would change something
-hldr patch site -p '{"spec":{"blog":{"enabled":true}}}'
+hldr diff -f projects/atlas.yaml    # exit 1 when applying would change something
+hldr patch collection blog -p '{"spec":{"enabled":true}}'
+hldr patch project hldr -p '{"metadata":{"tagline":"New line"}}'
 hldr delete project old-thing
 hldr sync                           # fetch now instead of on the next poll
 hldr sync status                    # served revision against the branch head
@@ -134,12 +141,14 @@ hldr sync status                    # served revision against the branch head
 
 `hldr validate -f PATH` needs no server, config or network: it checks
 files with the parser the server indexes with and, for a directory, the
-checks across files too (every singleton exists, the default theme has a
-file). hldr-content runs it on every push.
+checks across files too: the singletons and the pages the site needs
+exist, page types and collections pair up, names do not clash, and every
+reference in a template resolves. A manifest inside a checkout is checked
+against the page types it declares. hldr-content runs it on every push.
 
 ```
 hldr validate -f ~/dev/hldr-content
-hldr validate -f atlas.md
+hldr validate -f ~/dev/hldr-content/projects/atlas.yaml
 ```
 
 Each writing command validates with the parser the server indexes with, then
@@ -160,11 +169,13 @@ content:
 ```
 
 Resource types, their short names and their table columns come from the
-server (`/api/v1/api-resources`), cached per server under
-`$XDG_CACHE_HOME/hldr/` for six hours and refreshed at once for a type the
-cache does not know. `-o` takes `table`, `wide`, `json`, `yaml`, `name`,
-`jsonpath=TEMPLATE` (kubectl templates without `range`) and
-`custom-columns=HEADER:PATH,...`.
+server (`/api/v1/api-resources`): the built-in kinds, and one per page type
+content declares, so a type added in hldr-content works here without a new
+`hldr`. Discovery is cached per server under `$XDG_CACHE_HOME/hldr/` for six
+hours, and refreshed when the server runs another version or serves another
+content revision, and at once for a type the cache does not know. `-o`
+takes `table`, `wide`, `json`, `yaml`, `name`, `jsonpath=TEMPLATE` (kubectl
+templates without `range`) and `custom-columns=HEADER:PATH,...`.
 
 ## Test
 
@@ -201,6 +212,11 @@ Rollback, without rebuilding:
 ```
 gh workflow run deploy -f version=X.Y.Z
 ```
+
+A version older than a migration the database has applied refuses to open
+it, and a version before 4.0.0 cannot read today's content layout. Going
+back across either means content that version reads and a fresh database,
+which its first sync rebuilds.
 
 The target is `apollo.hvpaiva.dev`, reached as `deploy` with the host keys
 in `config/known_hosts`; a rebuilt host has new keys, so update them there.
