@@ -341,7 +341,7 @@ pub struct PageSpec {
     pub standalone_title: bool,
     /// Kept off the site while true: it answers 404 and leaves listings, the
     /// tree and the sitemap. The API still serves it.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub draft: bool,
 }
 
