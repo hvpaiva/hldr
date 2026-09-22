@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use hldr_core::github::{self, RateLimit};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 pub const API: &str = "https://api.github.com";
@@ -95,6 +96,53 @@ impl GitHub {
             404 => Ok(None),
             code => Err(github_error(code, &body)).with_context(|| format!("reading {path}")),
         }
+    }
+
+    /// The latest commits of `branch`, newest first, or only those that
+    /// changed `path`. Asked fresh, as [`GitHub::head`] is, so a commit a
+    /// write just made shows.
+    pub fn commits(&self, branch: &str, path: Option<&str>, limit: u16) -> Result<Vec<Commit>> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let mut query = format!("/commits?sha={branch}&per_page={limit}&fresh={nonce}");
+        if let Some(path) = path {
+            if !is_content_path(path) {
+                bail!(
+                    "{path:?} is not a path in the content repository, such as projects/atlas.yaml"
+                );
+            }
+            query.push_str(&format!("&path={path}"));
+        }
+        let list = self.call("GET", &query, None)?;
+        list.as_array()
+            .context("GitHub sent no list of commits")?
+            .iter()
+            .map(Commit::from_github)
+            .collect()
+    }
+
+    /// One commit, and the files it changed.
+    pub fn commit_files(&self, revision: &str) -> Result<(Commit, Vec<FileChange>)> {
+        let valid =
+            (4..=40).contains(&revision.len()) && revision.chars().all(|c| c.is_ascii_hexdigit());
+        if !valid {
+            bail!("{revision:?} is not a commit id: 4 to 40 hex digits");
+        }
+        let path = format!("/commits/{revision}");
+        let (status, body) = self.request("GET", &path, None)?;
+        let detail: Value = match status {
+            200 => serde_json::from_str(&body)
+                .with_context(|| format!("GitHub sent invalid JSON for {path}"))?,
+            404 | 422 => bail!("{} has no commit {revision}", self.repo),
+            code => return Err(github_error(code, &body)).with_context(|| format!("GET {path}")),
+        };
+        let files = detail["files"]
+            .as_array()
+            .map(|files| files.iter().map(FileChange::from_github).collect())
+            .transpose()?
+            .unwrap_or_default();
+        Ok((Commit::from_github(&detail)?, files))
     }
 
     /// Commits `changes` on top of `parent` and moves `branch` to the new
@@ -216,6 +264,76 @@ fn answer(mut response: ureq::http::Response<ureq::Body>) -> Result<(u16, String
         .read_to_string()
         .context("reading GitHub's answer")?;
     Ok((status, text))
+}
+
+/// A commit of the content repository, as `hldr history` shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Commit {
+    pub revision: String,
+    pub author: String,
+    /// When it was authored, ISO-8601 UTC.
+    pub date: String,
+    pub message: String,
+}
+
+impl Commit {
+    fn from_github(value: &Value) -> Result<Self> {
+        let commit = &value["commit"];
+        let text = |field: &Value| field.as_str().unwrap_or_default().to_owned();
+        Ok(Self {
+            revision: sha(&value["sha"])?,
+            author: text(&commit["author"]["name"]),
+            date: text(&commit["author"]["date"]),
+            message: text(&commit["message"]),
+        })
+    }
+
+    /// The first line of the message.
+    pub fn subject(&self) -> &str {
+        self.message.lines().next().unwrap_or_default()
+    }
+}
+
+/// A file a commit changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileChange {
+    pub path: String,
+    /// `added`, `modified`, `removed` or `renamed`, as GitHub words it.
+    pub status: String,
+    pub additions: u64,
+    pub deletions: u64,
+    /// Where a renamed file was before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_path: Option<String>,
+}
+
+impl FileChange {
+    fn from_github(value: &Value) -> Result<Self> {
+        Ok(Self {
+            path: value["filename"]
+                .as_str()
+                .context("GitHub sent a changed file without a name")?
+                .to_owned(),
+            status: value["status"].as_str().unwrap_or("modified").to_owned(),
+            additions: value["additions"].as_u64().unwrap_or(0),
+            deletions: value["deletions"].as_u64().unwrap_or(0),
+            previous_path: value["previous_filename"].as_str().map(str::to_owned),
+        })
+    }
+}
+
+/// A relative path of plain segments, which goes into a query string as it
+/// is: content paths need no escaping, and anything else is refused.
+fn is_content_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
 }
 
 fn sha(value: &Value) -> Result<String> {

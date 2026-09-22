@@ -24,6 +24,8 @@ use crate::github::{Change, GitHub};
 pub struct Target {
     pub github: GitHub,
     pub branch: String,
+    /// The commit the server serves, when it has synced one.
+    pub served: Option<String>,
 }
 
 impl Target {
@@ -47,6 +49,7 @@ impl Target {
         Ok(Self {
             github: GitHub::new(api, repo, token)?,
             branch: branch.to_owned(),
+            served: status["revision"].as_str().map(str::to_owned),
         })
     }
 

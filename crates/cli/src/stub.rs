@@ -173,6 +173,8 @@ pub mod hub {
         next: u64,
         /// Revisions the CLI asked the server to sync.
         pub synced: Vec<Option<String>>,
+        /// What the server reports it serves; the head when unset.
+        pub served: Option<String>,
     }
 
     impl Repo {
@@ -214,6 +216,47 @@ pub mod hub {
 
         pub fn commit_count(&self) -> usize {
             self.commits.len()
+        }
+
+        /// The files `commit` changed against its parent, as GitHub's
+        /// commit endpoint lists them.
+        fn changed(&self, commit: &str) -> Vec<Value> {
+            let parent = self
+                .commits
+                .get(commit)
+                .and_then(|c| c.1.clone())
+                .unwrap_or_default();
+            let (before, after) = (self.files(&parent), self.files(commit));
+            let lines = |text: Option<&String>| text.map_or(0, |t| t.lines().count());
+            let mut paths: Vec<&String> = before.keys().chain(after.keys()).collect();
+            paths.sort();
+            paths.dedup();
+            paths
+                .into_iter()
+                .filter(|path| before.get(*path) != after.get(*path))
+                .map(|path| {
+                    let (old, new) = (before.get(path), after.get(path));
+                    let status = match (old, new) {
+                        (None, _) => "added",
+                        (_, None) => "removed",
+                        _ => "modified",
+                    };
+                    json!({"filename": path, "status": status,
+                           "additions": if old.is_none() { lines(new) } else { 1 },
+                           "deletions": if new.is_none() { lines(old) } else if old.is_none() { 0 } else { 1 }})
+                })
+                .collect()
+        }
+
+        /// A commit as GitHub's REST API answers it: authored by one author,
+        /// a second apart by id.
+        fn rest_commit(&self, sha: &str) -> Value {
+            let message = self.message(sha);
+            let n = u64::from_str_radix(sha, 16).unwrap_or(0) % 60;
+            json!({"sha": sha, "commit": {
+                "author": {"name": "Hub Author", "date": format!("2026-09-22T12:00:{n:02}Z")},
+                "message": message,
+            }})
         }
     }
 
@@ -280,6 +323,8 @@ pub mod hub {
             .route("/repos/o/r/git/ref/heads/main", get(head))
             .route("/repos/o/r/contents/{*path}", get(contents))
             .route("/repos/o/r/git/commits/{sha}", get(commit))
+            .route("/repos/o/r/commits", get(commits))
+            .route("/repos/o/r/commits/{sha}", get(commit_detail))
             .route("/repos/o/r/git/trees", post(tree))
             .route("/repos/o/r/git/commits", post(new_commit))
             .route("/repos/o/r/git/refs/heads/main", patch(move_ref))
@@ -290,7 +335,8 @@ pub mod hub {
     fn status_body(repo: &Repo) -> Value {
         json!({
             "kind": "SyncStatus", "source": "github.com/o/r@main",
-            "repository": "o/r", "branch": "main", "revision": repo.head,
+            "repository": "o/r", "branch": "main",
+            "revision": repo.served.as_ref().unwrap_or(&repo.head),
             "synced_at": "t", "last_attempt_at": "t", "last_error": null,
         })
     }
@@ -331,6 +377,45 @@ pub mod hub {
             Some((tree, _, _)) => Json(json!({"sha": sha, "tree": {"sha": tree}})).into_response(),
             None => StatusCode::NOT_FOUND.into_response(),
         }
+    }
+
+    /// `GET /commits`: from the branch head down its parents, newest first,
+    /// only those that changed `path` when one is given.
+    async fn commits(
+        State(repo): State<Shared>,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Json<Value> {
+        let repo = repo.lock().unwrap();
+        assert_eq!(query["sha"], "main");
+        let limit: usize = query["per_page"].parse().unwrap();
+        let mut out = Vec::new();
+        let mut at = Some(repo.head.clone());
+        while let Some(sha) = at {
+            let touched = query.get("path").is_none_or(|path| {
+                repo.changed(&sha)
+                    .iter()
+                    .any(|file| file["filename"] == path.as_str())
+            });
+            if touched && out.len() < limit {
+                out.push(repo.rest_commit(&sha));
+            }
+            at = repo.commits.get(&sha).and_then(|c| c.1.clone());
+        }
+        Json(Value::Array(out))
+    }
+
+    async fn commit_detail(State(repo): State<Shared>, Path(sha): Path<String>) -> Response {
+        let repo = repo.lock().unwrap();
+        if !repo.commits.contains_key(&sha) {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"message": format!("No commit found for SHA: {sha}")})),
+            )
+                .into_response();
+        }
+        let mut detail = repo.rest_commit(&sha);
+        detail["files"] = Value::Array(repo.changed(&sha));
+        Json(detail).into_response()
     }
 
     fn authorized(headers: &HeaderMap) -> bool {

@@ -174,6 +174,8 @@ enum Command {
     Delete(cmd::delete::Args),
     /// Have the server fetch its content now, or show where it stands
     Sync(cmd::sync::Args),
+    /// List the commits of the content repository, or show one
+    History(cmd::history::Args),
     /// Check content files or a checkout offline, as the server would index them
     Validate(cmd::validate::Args),
     /// Print the client, server and content versions
@@ -279,6 +281,10 @@ fn run(cli: &Cli, env: &Env, config: &Config, term: &Term, out: &mut dyn Write) 
             let token = || config::github_token(env, config);
             let mut catalog = Catalog::new(&client, cache.as_deref());
             cmd::sync::run(out, term, &client, &mut catalog, github::API, &token, args)
+        }
+        Command::History(args) => {
+            let token = || config::github_token(env, config);
+            cmd::history::run(out, term, &connect()?, github::API, &token, args)
         }
         Command::Version(args) if args.client_only() => cmd::version::run(out, term, None, args),
         Command::Version(args) => cmd::version::run(out, term, Some(&connect()?), args),

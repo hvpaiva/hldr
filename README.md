@@ -153,7 +153,14 @@ hldr patch project hldr -p '{"metadata":{"tagline":"New line"}}'
 hldr delete project old-thing
 hldr sync                           # fetch now instead of on the next poll
 hldr sync status                    # served revision against the branch head
+hldr history                        # the branch's commits, the served one marked
+hldr history projects/atlas.yaml    # only those that changed a file
+hldr history -r f3d3461             # one commit: message and files changed
 ```
+
+`history` reads the content repository's commits from GitHub, as
+`kubectl rollout history` lists revisions, with the token when there is
+one (`--limit`, at most 100; `-o json|yaml`). It never writes.
 
 `hldr validate -f PATH` needs no server or network, and reads the config
 file only for colors: it checks

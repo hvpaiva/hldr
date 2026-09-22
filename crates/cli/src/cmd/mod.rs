@@ -8,6 +8,7 @@ pub mod diff;
 pub mod edit;
 pub mod explain;
 pub mod get;
+pub mod history;
 pub mod patch;
 pub mod sync;
 pub mod validate;
