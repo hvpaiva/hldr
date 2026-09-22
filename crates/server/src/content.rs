@@ -9,10 +9,13 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use hldr_core::api::GitHubQuota;
+use hldr_core::events::NewEvent;
 use hldr_core::github::RateLimit;
-use hldr_core::{Db, SyncReport};
+use hldr_core::{Db, SyncReport, store};
 
 const GITHUB_API: &str = "https://api.github.com";
 const DEFAULT_REF: &str = "main";
@@ -131,6 +134,9 @@ fn parse_interval(value: &str) -> Result<Option<Duration>, String> {
 pub enum SyncError {
     /// The source could not be read: network, GitHub, or the archive.
     Fetch(String),
+    /// GitHub refused for a spent rate limit; the message says when it
+    /// resets.
+    RateLimited(String),
     /// The content did not index; the previous revision stays served.
     Index(hldr_core::Error),
     /// The branch did not reach the revision the caller expected in time.
@@ -140,7 +146,7 @@ pub enum SyncError {
 impl fmt::Display for SyncError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Fetch(message) => write!(f, "fetch: {message}"),
+            Self::Fetch(message) | Self::RateLimited(message) => write!(f, "fetch: {message}"),
             Self::Index(error) => write!(f, "index: {error}"),
             Self::Stale(message) => write!(f, "stale: {message}"),
         }
@@ -158,6 +164,8 @@ pub struct Syncer {
     running: tokio::sync::Mutex<()>,
     /// How often and how long to wait for an expected revision.
     patience: (Duration, Duration),
+    /// The rate limit as GitHub's last answer reported it.
+    quota: Arc<Mutex<Option<GitHubQuota>>>,
 }
 
 impl Syncer {
@@ -168,7 +176,17 @@ impl Syncer {
             db,
             running: tokio::sync::Mutex::new(()),
             patience: (Duration::from_secs(3), Duration::from_secs(60)),
+            quota: Arc::default(),
         }
+    }
+
+    /// The GitHub rate limit as last reported; `None` before the first
+    /// request, and for content read from a directory.
+    pub fn quota(&self) -> Option<GitHubQuota> {
+        self.quota
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn with_token(mut self, token: Option<String>) -> Self {
@@ -206,6 +224,12 @@ impl Syncer {
             return Err(SyncError::Stale(format!("not a commit id: {sha:?}")));
         }
         let _running = self.running.lock().await;
+        let served = self
+            .db
+            .sync_state()
+            .await
+            .map_err(SyncError::Index)?
+            .revision;
         let outcome = self.run(force, expected).await;
         let recorded = match &outcome {
             Ok(Some((_, revision))) => self.db.record_sync(revision.as_deref()).await,
@@ -213,6 +237,9 @@ impl Syncer {
             Err(error) => self.db.record_sync_attempt(Some(&error.to_string())).await,
         };
         recorded.map_err(SyncError::Index)?;
+        if let Some(event) = sync_event(served.as_deref(), &outcome) {
+            record(&self.db, &event).await;
+        }
         outcome.map(|done| done.map(|(report, _)| report))
     }
 
@@ -229,7 +256,7 @@ impl Syncer {
                 Ok(Some((report, None)))
             }
             ContentSource::GitHub { api, repo, git_ref } => {
-                let github = GitHub::new(api, repo, self.token.clone());
+                let github = GitHub::new(api, repo, self.token.clone(), Arc::clone(&self.quota));
                 let resolve = || {
                     let github = github.clone();
                     let git_ref = git_ref.clone();
@@ -272,13 +299,79 @@ impl Syncer {
     }
 }
 
+/// Writes an event; one that cannot be written is logged and dropped, since
+/// events only report what happened.
+pub async fn record(db: &Db, event: &NewEvent) {
+    if let Err(error) = db.record_event(event).await {
+        tracing::warn!(%error, reason = event.reason, "event not recorded");
+    }
+}
+
+/// What a sync is worth an event for: a change of what is served, or a
+/// failure. A sync that changed nothing is not.
+fn sync_event(
+    served: Option<&str>,
+    outcome: &Result<Option<(SyncReport, Option<String>)>, SyncError>,
+) -> Option<NewEvent> {
+    match outcome {
+        Ok(None) => None,
+        Ok(Some((report, revision))) => {
+            let changes = changes(report);
+            let event = match (served, revision.as_deref()) {
+                (_, None) if changes.is_empty() => return None,
+                (_, None) => NewEvent::normal("Synced", format!("synced the directory: {changes}")),
+                (Some(old), Some(new)) if old == new && changes.is_empty() => return None,
+                (Some(old), Some(new)) if old == new => {
+                    NewEvent::normal("Synced", format!("reindexed {}: {changes}", short(new)))
+                }
+                (old, Some(new)) => NewEvent::normal(
+                    "Synced",
+                    format!(
+                        "{} → {}: {}",
+                        old.map_or("nothing", short),
+                        short(new),
+                        if changes.is_empty() {
+                            "no resource changed"
+                        } else {
+                            &changes
+                        }
+                    ),
+                ),
+            };
+            Some(event.at(revision.as_deref()))
+        }
+        Err(error @ SyncError::RateLimited(_)) => {
+            Some(NewEvent::warning("RateLimited", error.to_string()).at(served))
+        }
+        Err(error) => Some(NewEvent::warning("SyncFailed", error.to_string()).at(served)),
+    }
+}
+
+/// Such as `Page 1 upserted, Theme 2 deleted`: the kinds a sync changed.
+fn changes(report: &SyncReport) -> String {
+    let mut parts = Vec::new();
+    for (kind, counts) in &report.kinds {
+        if counts.upserted > 0 {
+            parts.push(format!("{kind} {} upserted", counts.upserted));
+        }
+        if counts.deleted > 0 {
+            parts.push(format!("{kind} {} deleted", counts.deleted));
+        }
+    }
+    parts.join(", ")
+}
+
+/// A commit as the CLI prints one: its first 12 digits.
+pub fn short(revision: &str) -> &str {
+    revision.get(..12).unwrap_or(revision)
+}
+
 async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+    work: impl FnOnce() -> Result<T, SyncError> + Send + 'static,
 ) -> Result<T, SyncError> {
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|err| SyncError::Fetch(err.to_string()))?
-        .map_err(SyncError::Fetch)
 }
 
 #[derive(Clone)]
@@ -286,10 +379,16 @@ struct GitHub {
     agent: ureq::Agent,
     base: String,
     token: Option<String>,
+    quota: Arc<Mutex<Option<GitHubQuota>>>,
 }
 
 impl GitHub {
-    fn new(api: &str, repo: &str, token: Option<String>) -> Self {
+    fn new(
+        api: &str,
+        repo: &str,
+        token: Option<String>,
+        quota: Arc<Mutex<Option<GitHubQuota>>>,
+    ) -> Self {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(HTTP_TIMEOUT))
             .http_status_as_error(false)
@@ -300,26 +399,38 @@ impl GitHub {
             agent,
             base: format!("{api}/repos/{repo}"),
             token,
+            quota,
         }
     }
 
-    /// The body of a successful answer. A spent rate limit says when it
-    /// resets, so `last_error` tells how long the site stays behind.
+    /// The body of a successful answer. Every answer that reports the rate
+    /// limit updates the quota; a spent one says when it resets, so
+    /// `last_error` tells how long the site stays behind.
     fn call(
+        &self,
         request: ureq::RequestBuilder<ureq::typestate::WithoutBody>,
         what: &str,
-    ) -> Result<ureq::Body, String> {
-        let response = request.call().map_err(|err| format!("{what}: {err}"))?;
-        let status = response.status().as_u16();
-        if (200..300).contains(&status) {
-            return Ok(response.into_body());
-        }
+    ) -> Result<ureq::Body, SyncError> {
+        let response = request
+            .call()
+            .map_err(|err| SyncError::Fetch(format!("{what}: {err}")))?;
         let header = |name: &str| {
             response
                 .headers()
                 .get(name)
                 .and_then(|value| value.to_str().ok())
         };
+        if let Some(quota) = quota(
+            header("x-ratelimit-limit"),
+            header("x-ratelimit-remaining"),
+            header("x-ratelimit-reset"),
+        ) {
+            *self.quota.lock().unwrap_or_else(PoisonError::into_inner) = Some(quota);
+        }
+        let status = response.status().as_u16();
+        if (200..300).contains(&status) {
+            return Ok(response.into_body());
+        }
         let now = hldr_core::github::now();
         match RateLimit::from_answer(
             status,
@@ -328,8 +439,11 @@ impl GitHub {
             header("retry-after"),
             now,
         ) {
-            Some(limit) => Err(format!("{what}: {}", limit.message(now))),
-            None => Err(format!("{what}: http status: {status}")),
+            Some(limit) => Err(SyncError::RateLimited(format!(
+                "{what}: {}",
+                limit.message(now)
+            ))),
+            None => Err(SyncError::Fetch(format!("{what}: http status: {status}"))),
         }
     }
 
@@ -348,7 +462,7 @@ impl GitHub {
     /// even if the branch moves meanwhile. Anonymous answers are cached by
     /// GitHub's CDN for up to a minute; a query parameter it has not seen
     /// makes it ask the origin, so a push shows at once.
-    fn resolve(&self, git_ref: &str) -> Result<String, String> {
+    fn resolve(&self, git_ref: &str) -> Result<String, SyncError> {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_nanos());
@@ -356,28 +470,44 @@ impl GitHub {
         let request = self
             .get(format!("{}/commits/{git_ref}?fresh={nonce}", self.base))
             .header("Accept", "application/vnd.github.sha");
-        let sha = Self::call(request, &what)?
+        let sha = self
+            .call(request, &what)?
             .with_config()
             .limit(128)
             .read_to_string()
-            .map_err(|err| format!("resolve {git_ref}: {err}"))?;
+            .map_err(|err| SyncError::Fetch(format!("resolve {git_ref}: {err}")))?;
         let sha = sha.trim();
         if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()) {
             Ok(sha.to_ascii_lowercase())
         } else {
-            Err(format!("resolve {git_ref}: not a commit id: {sha:?}"))
+            Err(SyncError::Fetch(format!(
+                "resolve {git_ref}: not a commit id: {sha:?}"
+            )))
         }
     }
 
-    fn download(&self, sha: &str, dest: &Path) -> Result<(), String> {
+    fn download(&self, sha: &str, dest: &Path) -> Result<(), SyncError> {
         let request = self.get(format!("{}/tarball/{sha}", self.base));
-        let reader = Self::call(request, &format!("download {sha}"))?
+        let reader = self
+            .call(request, &format!("download {sha}"))?
             .into_with_config()
             .limit(MAX_ARCHIVE_BYTES)
             .reader();
         extract(flate2::read::GzDecoder::new(reader), dest)
-            .map_err(|err| format!("unpack {sha}: {err}"))
+            .map_err(|err| SyncError::Fetch(format!("unpack {sha}: {err}")))
     }
+}
+
+/// The rate limit an answer reports, when it reports one whole: the
+/// tarball's redirect target, for one, does not.
+fn quota(limit: Option<&str>, remaining: Option<&str>, reset: Option<&str>) -> Option<GitHubQuota> {
+    let number = |value: Option<&str>| value?.trim().parse::<u64>().ok();
+    Some(GitHubQuota {
+        limit: number(limit)?,
+        remaining: number(remaining)?,
+        reset_at: store::from_unix(i64::try_from(number(reset)?).ok()?)?,
+        observed_at: store::now_rfc3339(),
+    })
 }
 
 /// Unpacks a GitHub tarball into `dest`, dropping the single top-level
@@ -611,17 +741,26 @@ mod tests {
             }
         }
 
+        /// Resets at 2026-09-22T12:00:00Z.
+        pub const RESET: u64 = 1_790_078_400;
+
         async fn commit(State(stub): State<Stub>) -> Response {
             if let Some(reset) = *stub.limited_until.lock().unwrap() {
                 let headers = [
+                    ("x-ratelimit-limit", "60".to_owned()),
                     ("x-ratelimit-remaining", "0".to_owned()),
                     ("x-ratelimit-reset", reset.to_string()),
                 ];
                 return (StatusCode::FORBIDDEN, headers, "rate limited").into_response();
             }
+            let headers = [
+                ("x-ratelimit-limit", "60".to_owned()),
+                ("x-ratelimit-remaining", "59".to_owned()),
+                ("x-ratelimit-reset", RESET.to_string()),
+            ];
             match stub.sha.lock().unwrap().clone() {
-                Some(sha) => sha.into_response(),
-                None => StatusCode::NOT_FOUND.into_response(),
+                Some(sha) => (headers, sha).into_response(),
+                None => (StatusCode::NOT_FOUND, headers).into_response(),
             }
         }
 
@@ -685,8 +824,47 @@ mod tests {
         let err = syncer.sync(false).await.unwrap_err();
         assert!(matches!(err, SyncError::Fetch(_)), "{err}");
         let state = db.sync_state().await.unwrap();
-        assert_eq!(state.revision, Some(second));
+        assert_eq!(state.revision, Some(second.clone()));
         assert!(state.last_error.unwrap().contains("404"));
+        syncer.sync(false).await.unwrap_err();
+
+        let events: Vec<_> = db
+            .events(None)
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|event| (event.reason, event.message, event.revision, event.count))
+            .collect();
+        assert_eq!(
+            events,
+            [
+                (
+                    "Synced".to_owned(),
+                    "nothing → aaaaaaaaaaaa: Collection 2 upserted, Nav 1 upserted, \
+                     Page 4 upserted, PageKind 2 upserted, Profile 1 upserted, \
+                     Project 2 upserted, Site 1 upserted, Theme 2 upserted"
+                        .to_owned(),
+                    Some(first),
+                    1
+                ),
+                (
+                    "Synced".to_owned(),
+                    "aaaaaaaaaaaa → bbbbbbbbbbbb: no resource changed".to_owned(),
+                    Some(second.clone()),
+                    1
+                ),
+                (
+                    "SyncFailed".to_owned(),
+                    "fetch: resolve main: http status: 404".to_owned(),
+                    Some(second),
+                    2
+                ),
+            ]
+        );
+        let quota = syncer.quota().unwrap();
+        assert_eq!((quota.limit, quota.remaining), (60, 59));
+        assert_eq!(quota.reset_at, "2026-09-22T12:00:00Z");
     }
 
     #[tokio::test]
@@ -702,13 +880,18 @@ mod tests {
         );
 
         let err = syncer.sync(false).await.unwrap_err();
-        assert!(matches!(err, SyncError::Fetch(_)), "{err}");
+        assert!(matches!(err, SyncError::RateLimited(_)), "{err}");
         let recorded = db.sync_state().await.unwrap().last_error.unwrap();
         assert!(
             recorded.starts_with("fetch: resolve main: GitHub rate limit exceeded; it resets at "),
             "{recorded}"
         );
         assert!(recorded.ends_with("in 30 min"), "{recorded}");
+        let events = db.events(None).await.unwrap().items;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].reason, "RateLimited");
+        assert_eq!(events[0].message, recorded);
+        assert_eq!(syncer.quota().unwrap().remaining, 0);
     }
 
     #[tokio::test]

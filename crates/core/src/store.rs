@@ -369,8 +369,21 @@ fn theme_from_row(row: ThemeRow) -> Result<Theme, Error> {
     })
 }
 
-fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+/// Now, as the database and the API write every time: ISO-8601 UTC, to the
+/// second.
+pub fn now_rfc3339() -> String {
+    rfc3339(chrono::Utc::now())
+}
+
+/// A time as [`now_rfc3339`] writes it.
+pub fn rfc3339(at: chrono::DateTime<chrono::Utc>) -> String {
+    at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// A Unix time, such as GitHub's rate-limit reset, as [`now_rfc3339`]
+/// writes times; `None` when out of range.
+pub fn from_unix(seconds: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp(seconds, 0).map(rfc3339)
 }
 
 #[cfg(test)]

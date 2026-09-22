@@ -1,11 +1,15 @@
+use std::time::Duration;
+
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::rejection::QueryRejection;
+use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use hldr_core::api::{self, PageType, Problem};
 use hldr_core::store;
+use serde::Deserialize;
 use tower_http::trace::TraceLayer;
 
 use crate::content::SyncError;
@@ -39,6 +43,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/api-resources", get(api_resources))
         .route("/api/v1/schema", get(schema))
         .route("/api/v1/sync", get(sync_status).post(sync))
+        .route("/api/v1/events", get(events))
+        .route("/api/v1/events/{name}", get(event))
+        .route("/api/v1/server", get(server))
         .route("/api/v1/{resource}", get(list))
         .route("/api/v1/{resource}/{name}", get(item))
         .fallback(fallback)
@@ -147,7 +154,7 @@ async fn item(
     let db = &state.db;
     let missing = |singular: &str| not_found(format!("{singular} '{name}' not found"));
     let json = match resource.as_str() {
-        "site" | "profile" | "nav" => {
+        "site" | "profile" | "nav" | "server" => {
             return Ok(not_found(format!(
                 "{resource} is a singleton: it takes no name"
             )));
@@ -185,6 +192,105 @@ async fn item(
     Ok(json)
 }
 
+#[derive(Deserialize)]
+struct EventsQuery {
+    after: Option<i64>,
+}
+
+/// `/api/v1/events[?after=SEQ]`: every event, or those written after a
+/// stream position, which is how `hldr get events --watch` polls.
+async fn events(
+    State(state): State<AppState>,
+    query: Result<Query<EventsQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let Ok(Query(query)) = query else {
+        return Ok(problem(
+            StatusCode::BAD_REQUEST,
+            "Bad Request",
+            "after must be a stream position, a whole number",
+        ));
+    };
+    Ok(Json(state.db.events(query.after).await?).into_response())
+}
+
+async fn event(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Response, ApiError> {
+    let found = match name.parse() {
+        Ok(id) => state.db.event(id).await?,
+        Err(_) => None,
+    };
+    Ok(match found {
+        Some(event) => Json(event).into_response(),
+        None => not_found(format!("event '{name}' not found")),
+    })
+}
+
+/// `/api/v1/server`: the running process, its content and its database.
+async fn server(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let sync = state.db.sync_state().await?;
+    let size = state.db.size()?;
+    let server = api::Server {
+        kind: "Server".to_owned(),
+        metadata: api::SingletonMetadata::default(),
+        status: api::ServerStatus {
+            version: hldr_core::VERSION.to_owned(),
+            revision: hldr_core::REVISION.to_owned(),
+            started_at: state.started.at.clone(),
+            uptime: uptime(state.started.instant.elapsed()),
+            content: api::ContentState {
+                source: state.syncer.source().describe(),
+                revision: sync.revision,
+                synced_at: sync.synced_at,
+                last_attempt_at: sync.last_attempt_at,
+                last_error: sync.last_error,
+            },
+            database: api::DatabaseState {
+                bytes: size.bytes,
+                wal_bytes: size.wal_bytes,
+            },
+            github: state.syncer.quota(),
+        },
+    };
+    Ok(Json(server).into_response())
+}
+
+/// Such as `3d4h`, `2h15m` or `40s`: the two largest units, as kubectl
+/// writes ages.
+fn uptime(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    let (days, hours, minutes, seconds) = (
+        seconds / 86_400,
+        seconds / 3600 % 24,
+        seconds / 60 % 60,
+        seconds % 60,
+    );
+    match (days, hours, minutes) {
+        (0, 0, 0) => format!("{seconds}s"),
+        (0, 0, _) => format!("{minutes}m{seconds}s"),
+        (0, _, _) => format!("{hours}h{minutes}m"),
+        _ => format!("{days}d{hours}h"),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn uptime_reads_as_an_age() {
+    let cases = [
+        (0, "0s"),
+        (59, "59s"),
+        (61, "1m1s"),
+        (3600, "1h0m"),
+        (7_380, "2h3m"),
+        (86_400, "1d0h"),
+        (4 * 86_400 + 3 * 3600 + 59, "4d3h"),
+    ];
+    for (seconds, expected) in cases {
+        assert_eq!(uptime(Duration::from_secs(seconds)), expected, "{seconds}");
+    }
+}
+
 async fn sync_status(State(state): State<AppState>) -> Result<Response, ApiError> {
     Ok(Json(status(&state, None).await?).into_response())
 }
@@ -199,7 +305,7 @@ async fn sync(
     match state.syncer.sync_to(false, expected.as_deref()).await {
         Ok(report) => Ok(Json(status(&state, report).await?).into_response()),
         Err(SyncError::Stale(message)) => Ok(problem(StatusCode::CONFLICT, "Conflict", message)),
-        Err(SyncError::Fetch(message)) => Ok(problem(
+        Err(SyncError::Fetch(message) | SyncError::RateLimited(message)) => Ok(problem(
             StatusCode::BAD_GATEWAY,
             "Bad Gateway",
             format!("content fetch failed: {message}"),

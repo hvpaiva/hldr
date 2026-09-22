@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sqlx::SqlitePool;
@@ -9,6 +9,16 @@ use crate::Error;
 #[derive(Clone, Debug)]
 pub struct Db {
     pool: SqlitePool,
+    path: PathBuf,
+}
+
+/// What the database takes on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Size {
+    /// The main file.
+    pub bytes: u64,
+    /// The write-ahead log, not yet checkpointed into the main file.
+    pub wal_bytes: u64,
 }
 
 impl Db {
@@ -35,10 +45,27 @@ impl Db {
 
         sqlx::migrate!("../../migrations").run(&pool).await?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            path: path.to_owned(),
+        })
     }
 
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// Sizes of the files on disk; a missing WAL, as after a checkpoint on
+    /// close, counts as empty.
+    pub fn size(&self) -> Result<Size, Error> {
+        let bytes = std::fs::metadata(&self.path)?.len();
+        let mut wal = self.path.clone().into_os_string();
+        wal.push("-wal");
+        let wal_bytes = match std::fs::metadata(&wal) {
+            Ok(metadata) => metadata.len(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(err) => return Err(err.into()),
+        };
+        Ok(Size { bytes, wal_bytes })
     }
 }

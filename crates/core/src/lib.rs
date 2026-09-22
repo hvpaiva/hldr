@@ -3,6 +3,8 @@ use serde::Serialize;
 pub mod api;
 #[cfg(feature = "store")]
 pub mod db;
+#[cfg(feature = "store")]
+pub mod events;
 pub mod github;
 #[cfg(feature = "store")]
 pub mod index;

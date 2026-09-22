@@ -8,6 +8,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use hldr_core::events::NewEvent;
 use hldr_core::{Db, Health};
 use tokio::signal::unix::{SignalKind, signal};
 use tower_http::trace::TraceLayer;
@@ -33,6 +34,23 @@ struct AppState {
     db: Db,
     site: Site,
     syncer: Arc<content::Syncer>,
+    started: Started,
+}
+
+/// When this process started, for its uptime.
+#[derive(Clone)]
+struct Started {
+    at: String,
+    instant: std::time::Instant,
+}
+
+impl Started {
+    fn now() -> Self {
+        Self {
+            at: hldr_core::store::now_rfc3339(),
+            instant: std::time::Instant::now(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -78,7 +96,9 @@ async fn main() {
     let source = content::ContentSource::from_env().unwrap_or_else(|err| panic!("{err}"));
     let poll = content::poll_interval().unwrap_or_else(|err| panic!("{err}"));
 
+    let started = Started::now();
     let db = Db::open(&db_path).await.expect("failed to open database");
+    started_event(&db).await;
     let syncer = Arc::new(
         content::Syncer::new(source, db.clone())
             .with_token(std::env::var("HLDR_GITHUB_TOKEN").ok()),
@@ -103,9 +123,10 @@ async fn main() {
     }
 
     let state = AppState {
-        db,
+        db: db.clone(),
         site: Site::from_env(),
         syncer,
+        started,
     };
     let site = site_router(state.clone());
     let private = api::router(state);
@@ -165,6 +186,35 @@ async fn main() {
         .await
         .expect("api server task panicked")
         .expect("api server error");
+    content::record(
+        &db,
+        &NewEvent::normal(
+            "Stopped",
+            format!("hldr-server {} stopped", hldr_core::VERSION),
+        ),
+    )
+    .await;
+}
+
+/// The first event of every process: which binary, over which content.
+async fn started_event(db: &Db) {
+    let served = match db.sync_state().await {
+        Ok(state) => state.revision,
+        Err(error) => {
+            tracing::warn!(%error, "sync state unreadable at boot");
+            None
+        }
+    };
+    let message = format!(
+        "hldr-server {} ({}) started",
+        hldr_core::VERSION,
+        content::short(hldr_core::REVISION)
+    );
+    content::record(
+        db,
+        &NewEvent::normal("Started", message).at(served.as_deref()),
+    )
+    .await;
 }
 
 fn site_router(state: AppState) -> Router {
@@ -714,7 +764,15 @@ mod tests {
             origin: "https://example.test".to_owned(),
             host: "example.test".to_owned(),
         };
-        (dir, AppState { db, site, syncer })
+        (
+            dir,
+            AppState {
+                db,
+                site,
+                syncer,
+                started: Started::now(),
+            },
+        )
     }
 
     async fn state() -> (tempfile::TempDir, AppState) {
@@ -1224,6 +1282,90 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(schema["Project"]["title"], "Project");
         assert_eq!(schema["Post"]["title"], "Post");
+    }
+
+    #[tokio::test]
+    async fn private_api_serves_events_as_a_stream() {
+        let (_dir, state) = state().await;
+        started_event(&state.db).await;
+        let (status, _, list) = call(api::router(state.clone()), "/api/v1/events").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list["kind"], "EventList");
+        let reasons: Vec<&str> = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["reason"].as_str().unwrap())
+            .collect();
+        assert_eq!(reasons, ["Synced", "Started"]);
+        let started = &list["items"][1];
+        assert_eq!(started["type"], "Normal");
+        assert_eq!(started["message"], "hldr-server dev (unknown) started");
+
+        let seq = list["seq"].as_i64().unwrap();
+        let path = format!("/api/v1/events?after={seq}");
+        let (_, _, empty) = call(api::router(state.clone()), &path).await;
+        assert_eq!(empty["items"], serde_json::json!([]));
+        assert_eq!(empty["seq"], seq);
+        started_event(&state.db).await;
+        let (_, _, update) = call(api::router(state.clone()), &path).await;
+        assert_eq!(update["items"][0]["count"], 2);
+        assert_eq!(
+            update["items"][0]["metadata"]["name"],
+            started["metadata"]["name"]
+        );
+
+        let one = format!(
+            "/api/v1/events/{}",
+            started["metadata"]["name"].as_str().unwrap()
+        );
+        let (status, _, event) = call(api::router(state.clone()), &one).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(event["reason"], "Started");
+        for missing in ["/api/v1/events/999", "/api/v1/events/nope"] {
+            let (status, _, _) = call(api::router(state.clone()), missing).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+        }
+        let (status, content_type, _) =
+            call(api::router(state.clone()), "/api/v1/events?after=x").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(content_type, "application/problem+json");
+    }
+
+    #[tokio::test]
+    async fn private_api_describes_the_server() {
+        let (_dir, state) = state().await;
+        let (status, _, server) = call(api::router(state.clone()), "/api/v1/server").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(server["kind"], "Server");
+        let status = &server["status"];
+        assert_eq!(status["version"], hldr_core::VERSION);
+        assert_eq!(status["started_at"], state.started.at.as_str());
+        assert!(status["uptime"].as_str().unwrap().ends_with('s'));
+        assert!(
+            status["content"]["source"]
+                .as_str()
+                .unwrap()
+                .starts_with("dir:")
+        );
+        assert!(status["content"]["synced_at"].is_string());
+        assert!(status["database"]["bytes"].as_u64().unwrap() > 0);
+        assert!(
+            status["github"].is_null(),
+            "a directory asks GitHub nothing"
+        );
+
+        let (status, _, _) = call(api::router(state.clone()), "/api/v1/server/x").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_public_site_serves_nothing_the_server_keeps() {
+        let (_dir, state) = state().await;
+        for path in ["/api/v1/events", "/api/v1/server", "/events", "/server"] {
+            let (status, _) = page(site_router(state.clone()), path, None).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
     }
 
     #[tokio::test]

@@ -174,6 +174,132 @@ impl SyncStatus {
     }
 }
 
+/// Whether an event reports normal operation or something to look at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum EventType {
+    Normal,
+    Warning,
+}
+
+impl EventType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "Normal",
+            Self::Warning => "Warning",
+        }
+    }
+}
+
+/// Something that happened to the server, as `hldr get events` lists it.
+/// Kept 30 days; the same event repeated in a row is one event with a count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Event {
+    /// Always `Event`.
+    pub kind: String,
+    pub metadata: EventMetadata,
+    #[serde(rename = "type")]
+    pub event_type: EventType,
+    /// What happened, in one word, such as `Started`, `Synced` or
+    /// `SyncFailed`.
+    pub reason: String,
+    pub message: String,
+    /// Content commit served when it happened; null for content read from a
+    /// directory, and before the first sync.
+    pub revision: Option<String>,
+    /// How many times in a row it happened.
+    pub count: u32,
+    /// When it first happened, ISO-8601 UTC.
+    pub first_at: String,
+    /// When it last happened, ISO-8601 UTC.
+    pub last_at: String,
+}
+
+/// An event's identity and place in the stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EventMetadata {
+    /// Identifier, a number that never changes.
+    pub name: String,
+    /// Position in the stream, raised whenever the event is written again:
+    /// `GET /api/v1/events?after=SEQ` answers what changed after it.
+    pub seq: i64,
+}
+
+/// Events oldest first, and the stream position they were read at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EventList {
+    /// Always `EventList`.
+    pub kind: String,
+    /// Where the stream stood when the list was read: the `after` of the
+    /// next call that wants only what is new.
+    pub seq: i64,
+    pub items: Vec<Event>,
+}
+
+/// The running server, as `hldr describe server` shows it. Only on the
+/// private API: nothing here is public.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Server {
+    /// Always `Server`.
+    pub kind: String,
+    pub metadata: SingletonMetadata,
+    pub status: ServerStatus,
+}
+
+/// What the server observes about itself.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ServerStatus {
+    /// Release version of the binary.
+    pub version: String,
+    /// Git commit the binary was built from.
+    pub revision: String,
+    /// When this process started, ISO-8601 UTC.
+    pub started_at: String,
+    /// How long it has run, such as `3d4h` or `12m5s`.
+    pub uptime: String,
+    pub content: ContentState,
+    pub database: DatabaseState,
+    /// The GitHub rate limit as its last answer reported it; null before the
+    /// first request, and for content read from a directory.
+    pub github: Option<GitHubQuota>,
+}
+
+/// Where the served content stands.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContentState {
+    /// Such as `github.com/hvpaiva/hldr-content@main`.
+    pub source: String,
+    /// Content commit being served; null for a directory.
+    pub revision: Option<String>,
+    /// When it was materialized, ISO-8601 UTC.
+    pub synced_at: Option<String>,
+    /// When a sync last ran, successful or not, ISO-8601 UTC.
+    pub last_attempt_at: Option<String>,
+    /// Why the last attempt failed; null when it succeeded.
+    pub last_error: Option<String>,
+}
+
+/// What the database takes on disk.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+pub struct DatabaseState {
+    /// The main file, in bytes.
+    pub bytes: u64,
+    /// The write-ahead log not yet folded into the main file, in bytes.
+    pub wal_bytes: u64,
+}
+
+/// A GitHub rate limit, from the `x-ratelimit-*` headers of its answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GitHubQuota {
+    /// Requests allowed in the window: 60 an hour without a token.
+    pub limit: u64,
+    /// Requests left in the window.
+    pub remaining: u64,
+    /// When the window starts over, ISO-8601 UTC.
+    pub reset_at: String,
+    /// When GitHub reported this, ISO-8601 UTC.
+    pub observed_at: String,
+}
+
 /// Body of `POST /api/v1/sync`. Empty, it syncs whatever the branch points
 /// at; with a revision, it waits for the branch to point there first, since
 /// GitHub can serve a stale ref for a few seconds after a push.
@@ -220,6 +346,8 @@ pub struct ApiResource {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Source {
     /// Path under the content root; `{name}` stands for the resource name.
+    /// Empty for what the server keeps itself, such as events, which no
+    /// file declares and no verb writes.
     pub path: String,
 }
 
@@ -334,6 +462,38 @@ pub fn resources(types: &[PageType<'_>]) -> List<ApiResource> {
                 updated,
             ],
         ),
+        kept(
+            "events",
+            "Event",
+            &["ev"],
+            false,
+            &["get", "explain", "watch"],
+            &[
+                ("LAST SEEN", ".last_at", false),
+                ("TYPE", ".type", false),
+                ("REASON", ".reason", false),
+                ("COUNT", ".count", false),
+                ("MESSAGE", ".message", false),
+                ("FIRST SEEN", ".first_at", true),
+                ("REVISION", ".revision", true),
+            ],
+        ),
+        kept(
+            "server",
+            "Server",
+            &[],
+            true,
+            &["get", "describe", "explain"],
+            &[
+                ("VERSION", ".status.version", false),
+                ("UPTIME", ".status.uptime", false),
+                ("CONTENT", ".status.content.revision", false),
+                ("SYNCED", ".status.content.synced_at", false),
+                ("STARTED", ".status.started_at", true),
+                ("DB BYTES", ".status.database.bytes", true),
+                ("GITHUB LEFT", ".status.github.remaining", true),
+            ],
+        ),
     ];
     let mut types: Vec<&PageType<'_>> = types.iter().collect();
     types.sort_by(|a, b| a.spec.names.plural.cmp(&b.spec.names.plural));
@@ -387,6 +547,29 @@ fn builtin(
         verbs: verbs(kind.is_singleton()),
         source: Source {
             path: kind.path_template().to_owned(),
+        },
+        columns: columns(printed),
+    }
+}
+
+/// A resource the server keeps itself: read-only, with no file behind it.
+fn kept(
+    name: &str,
+    kind: &str,
+    short_names: &[&str],
+    singleton: bool,
+    verbs: &[&str],
+    printed: &[(&str, &str, bool)],
+) -> ApiResource {
+    ApiResource {
+        name: name.to_owned(),
+        singular: kind.to_lowercase(),
+        short_names: short_names.iter().map(|&s| s.to_owned()).collect(),
+        kind: kind.to_owned(),
+        singleton,
+        verbs: verbs.iter().map(|&verb| verb.to_owned()).collect(),
+        source: Source {
+            path: String::new(),
         },
         columns: columns(printed),
     }
@@ -446,6 +629,8 @@ pub fn schemas(types: &[PageType<'_>]) -> Map<String, Value> {
     out.insert("PageKind".to_owned(), titled::<PageKind>("PageKind"));
     out.insert("Collection".to_owned(), titled::<Collection>("Collection"));
     out.insert("Theme".to_owned(), titled::<Theme>("Theme"));
+    out.insert("Event".to_owned(), titled::<Event>("Event"));
+    out.insert("Server".to_owned(), titled::<Server>("Server"));
     out.insert(
         "Page".to_owned(),
         page_schema("Page", &IndexMap::new(), "A page outside any collection."),
@@ -719,6 +904,13 @@ mod tests {
         let mut node = schema;
         for name in path {
             node = &node["properties"][*name];
+            // An `Option<T>` is `anyOf [T, null]`, as `hldr explain` reads it.
+            if let Some(some) = node["anyOf"]
+                .as_array()
+                .and_then(|variants| variants.iter().find(|v| v["type"] != "null"))
+            {
+                node = some;
+            }
             if let Some(reference) = node["$ref"].as_str() {
                 let def = reference.trim_start_matches("#/$defs/");
                 node = &defs[def];
@@ -839,8 +1031,29 @@ mod tests {
         let kind = project_kind();
         for resource in resources(&types(&kind)).items {
             let deletable = resource.verbs.iter().any(|verb| verb == "delete");
-            assert_eq!(deletable, !resource.singleton, "{}", resource.kind);
+            let from_content = !resource.source.path.is_empty();
+            assert_eq!(
+                deletable,
+                from_content && !resource.singleton,
+                "{}",
+                resource.kind
+            );
         }
+    }
+
+    #[test]
+    fn what_the_server_keeps_is_read_only() {
+        let catalog = resources(&[]);
+        for name in ["events", "server"] {
+            let resource = catalog.items.iter().find(|r| r.name == name).unwrap();
+            assert!(resource.source.path.is_empty(), "{name}");
+            for verb in WRITE_VERBS.iter().chain(&["delete"]) {
+                assert!(!resource.verbs.iter().any(|v| v == verb), "{name}: {verb}");
+            }
+        }
+        let events = catalog.items.iter().find(|r| r.name == "events").unwrap();
+        assert!(events.verbs.iter().any(|v| v == "watch"));
+        assert_eq!(events.short_names, ["ev"]);
     }
 
     /// Keys a YAML mapping holds at `indent` under the line `under:`, or at
