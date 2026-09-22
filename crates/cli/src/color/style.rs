@@ -5,6 +5,7 @@
 use std::fmt::Write as _;
 
 use anyhow::{Result, bail};
+use clap::builder::styling;
 
 /// How many colors the terminal shows; a color it cannot show is drawn as
 /// the nearest one it can.
@@ -87,6 +88,59 @@ impl Style {
             }
         }
         out
+    }
+
+    /// The same style as clap draws help with.
+    pub fn clap(&self, level: Level) -> styling::Style {
+        let color = |color| match downgrade(color, level) {
+            Color::Default => None,
+            Color::Basic(i) => Some(styling::Color::Ansi(BASIC_ANSI[usize::from(i)])),
+            Color::Indexed(i) => Some(styling::Color::Ansi256(styling::Ansi256Color(i))),
+            Color::Rgb(r, g, b) => Some(styling::Color::Rgb(styling::RgbColor(r, g, b))),
+        };
+        self.codes
+            .iter()
+            .fold(styling::Style::new(), |style, code| match *code {
+                Code::Fg(c) => style.fg_color(color(c)),
+                Code::Bg(c) => style.bg_color(color(c)),
+                Code::Attr(attr) => style.effects(style.get_effects() | effect(attr)),
+            })
+    }
+}
+
+const BASIC_ANSI: [styling::AnsiColor; 16] = {
+    use styling::AnsiColor::*;
+    [
+        Black,
+        Red,
+        Green,
+        Yellow,
+        Blue,
+        Magenta,
+        Cyan,
+        White,
+        BrightBlack,
+        BrightRed,
+        BrightGreen,
+        BrightYellow,
+        BrightBlue,
+        BrightMagenta,
+        BrightCyan,
+        BrightWhite,
+    ]
+};
+
+fn effect(attr: u8) -> styling::Effects {
+    match attr {
+        1 => styling::Effects::BOLD,
+        2 => styling::Effects::DIMMED,
+        3 => styling::Effects::ITALIC,
+        4 => styling::Effects::UNDERLINE,
+        5 | 6 => styling::Effects::BLINK,
+        7 => styling::Effects::INVERT,
+        8 => styling::Effects::HIDDEN,
+        9 => styling::Effects::STRIKETHROUGH,
+        _ => styling::Effects::new(),
     }
 }
 
@@ -207,8 +261,9 @@ fn hex(spec: &str) -> Option<Color> {
     }
 }
 
-fn push_color(out: &mut String, color: Color, level: Level, background: bool) {
-    let color = match (color, level) {
+/// The nearest color a terminal at `level` shows.
+fn downgrade(color: Color, level: Level) -> Color {
+    match (color, level) {
         (Color::Rgb(r, g, b), Level::Ansi256) => Color::Indexed(rgb_to_256(r, g, b)),
         (Color::Rgb(r, g, b), Level::Basic) => Color::Basic(nearest_basic(r, g, b)),
         (Color::Indexed(i), Level::Basic) if i >= 16 => {
@@ -217,9 +272,12 @@ fn push_color(out: &mut String, color: Color, level: Level, background: bool) {
         }
         (Color::Indexed(i), Level::Basic) => Color::Basic(i),
         (other, _) => other,
-    };
+    }
+}
+
+fn push_color(out: &mut String, color: Color, level: Level, background: bool) {
     let base = if background { 40 } else { 30 };
-    let _ = match color {
+    let _ = match downgrade(color, level) {
         Color::Default => write!(out, "{}", base + 9),
         Color::Basic(i) if i < 8 => write!(out, "{}", base + i),
         Color::Basic(i) => write!(out, "{}", base + 60 + (i - 8)),
@@ -338,6 +396,26 @@ mod tests {
         let list = Style::parse_list("hicyan / cyan").unwrap();
         assert_eq!(list.len(), 2);
         assert_eq!(list[1].sgr(Level::Basic), "36");
+    }
+
+    #[test]
+    fn converts_to_clap_styles() {
+        let style = Style::parse("fg=#ff0000:bg=4:bold:underline").unwrap();
+        assert_eq!(
+            style.clap(Level::Basic).render().to_string(),
+            styling::Style::new()
+                .fg_color(Some(styling::AnsiColor::BrightRed.into()))
+                .bg_color(Some(styling::AnsiColor::Blue.into()))
+                .bold()
+                .underline()
+                .render()
+                .to_string()
+        );
+        assert_eq!(
+            Style::parse("208").unwrap().clap(Level::TrueColor),
+            styling::Style::new().fg_color(Some(styling::Ansi256Color(208).into()))
+        );
+        assert_eq!(PLAIN.clap(Level::TrueColor), styling::Style::new());
     }
 
     #[test]

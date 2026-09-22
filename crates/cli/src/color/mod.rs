@@ -98,7 +98,7 @@ pub struct Term {
 }
 
 impl Term {
-    #[cfg(test)]
+    /// No colors on either stream.
     pub fn plain() -> Self {
         Self {
             theme: Theme::plain(),
@@ -190,6 +190,29 @@ impl Term {
             self.err()
                 .paint(Role::StderrWarning, &format!("warning: {message}"))
         );
+    }
+
+    /// Has clap draw help, on stdout, and usage errors, on stderr, in the
+    /// theme. clap takes one color choice for both streams, so when only one
+    /// of them is colored it decides per stream itself, as it does by
+    /// default.
+    pub fn help(&self, command: clap::Command) -> clap::Command {
+        let choice = match (self.out, self.err) {
+            (Some(_), Some(_)) => clap::ColorChoice::Always,
+            (None, None) => clap::ColorChoice::Never,
+            _ => clap::ColorChoice::Auto,
+        };
+        let level = self.out.or(self.err).unwrap_or(Level::TrueColor);
+        let style = |role| self.theme.style(role).clap(level);
+        let styles = clap::builder::Styles::plain()
+            .header(style(Role::HelpHeader))
+            .usage(style(Role::HelpHeader))
+            .literal(style(Role::HelpFlag))
+            .placeholder(style(Role::HelpPlaceholder))
+            .error(style(Role::StderrError))
+            .valid(style(Role::StatusSuccess))
+            .invalid(style(Role::StatusWarning));
+        command.color(choice).styles(styles)
     }
 }
 

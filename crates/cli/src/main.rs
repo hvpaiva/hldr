@@ -1,10 +1,11 @@
 //! `hldr`: administration of hvpaiva.dev in the kubectl shape.
 
+use std::ffi::OsString;
 use std::io::{self, BufWriter, IsTerminal, Write};
 use std::process::ExitCode;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 mod client;
 mod cmd;
@@ -34,6 +35,14 @@ struct Cli {
     /// Base URL of the private API; overrides `server:` in the config file.
     #[arg(long, global = true, env = "HLDR_SERVER", value_name = "URL")]
     server: Option<String>,
+    #[command(flatten)]
+    color: ColorArgs,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Parser, Default, Debug, PartialEq)]
+struct ColorArgs {
     /// Disable colored output.
     #[arg(long, global = true)]
     plain: bool,
@@ -56,18 +65,44 @@ struct Cli {
     /// tritanopia, alone or with -dark or -light; overrides `color.preset`.
     #[arg(long, global = true, env = "HLDR_COLOR_PRESET", value_name = "PRESET")]
     color_preset: Option<String>,
-    #[command(subcommand)]
-    command: Command,
 }
 
-impl Cli {
-    fn color(&self) -> color::Options {
+impl ColorArgs {
+    fn options(&self) -> color::Options {
         color::Options {
             plain: self.plain,
             force: self.force_colors.clone(),
             light_background: self.light_background,
             preset: self.color_preset.clone(),
         }
+    }
+
+    /// The color flags alone, read before the command line is parsed, since
+    /// clap prints help and usage errors while it parses. Their values and
+    /// environment variables are read by clap itself; anything it rejects
+    /// here is reported by the full parse.
+    fn prescan(args: impl IntoIterator<Item = OsString>) -> Self {
+        let mut kept = vec![OsString::from("hldr")];
+        let mut args = args.into_iter().skip(1);
+        while let Some(arg) = args.next() {
+            let Some(text) = arg.to_str() else { continue };
+            match text {
+                "--" => break,
+                "--plain" | "--light-background" => kept.push(arg),
+                "--color-preset" => {
+                    kept.push(arg);
+                    kept.extend(args.next());
+                }
+                _ if text == "--force-colors"
+                    || text.starts_with("--force-colors=")
+                    || text.starts_with("--color-preset=") =>
+                {
+                    kept.push(arg);
+                }
+                _ => {}
+            }
+        }
+        Self::try_parse_from(kept).unwrap_or_default()
     }
 }
 
@@ -100,17 +135,28 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
     let env = Env::from_process();
     let file = env.config_file();
-    let setup = Config::load(file.as_deref()).and_then(|config| {
-        let term = Term::new(
-            &cli.color(),
+    let config = Config::load(file.as_deref());
+    let term = |options: &color::Options, config: Option<&Config>| {
+        Term::new(
+            options,
             &env.color,
-            config.color.as_ref(),
+            config.and_then(|config| config.color.as_ref()),
             io::stdout().is_terminal(),
             io::stderr().is_terminal(),
-        )?;
+        )
+    };
+    // A broken config or theme is reported after parsing; help is then plain.
+    let early = term(
+        &ColorArgs::prescan(std::env::args_os()).options(),
+        config.as_ref().ok(),
+    )
+    .unwrap_or_else(|_| Term::plain());
+    let matches = early.help(Cli::command()).get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
+    let setup = config.and_then(|config| {
+        let term = term(&cli.color.options(), Some(&config))?;
         Ok((config, term))
     });
     let (config, term) = match setup {
@@ -233,10 +279,49 @@ fn broken_pipe(err: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+        ColorArgs::command().debug_assert();
+    }
+
+    #[test]
+    fn prescan_finds_the_color_flags_anywhere() {
+        let scan = |args: &[&str]| ColorArgs::prescan(args.iter().map(OsString::from));
+        assert_eq!(
+            scan(&[
+                "hldr",
+                "get",
+                "--plain",
+                "p",
+                "--color-preset",
+                "light",
+                "--force-colors=256",
+                "--help",
+            ]),
+            ColorArgs {
+                plain: true,
+                force_colors: Some("256".to_owned()),
+                light_background: false,
+                color_preset: Some("light".to_owned()),
+            }
+        );
+        assert_eq!(
+            scan(&[
+                "hldr",
+                "--force-colors",
+                "--color-preset=none",
+                "--light-background"
+            ]),
+            ColorArgs {
+                plain: false,
+                force_colors: Some("auto".to_owned()),
+                light_background: true,
+                color_preset: Some("none".to_owned()),
+            }
+        );
+        assert!(!scan(&["hldr", "get", "--", "--plain"]).plain);
+        assert_eq!(scan(&["hldr", "--color-preset"]), ColorArgs::default());
     }
 }

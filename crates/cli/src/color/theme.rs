@@ -48,6 +48,9 @@ pub enum Role {
     SyncCommitted,
     SyncSynced,
     SyncSkipped,
+    HelpHeader,
+    HelpFlag,
+    HelpPlaceholder,
 }
 
 struct Spec {
@@ -120,6 +123,10 @@ const SPECS: &[Spec] = &[
     color(SyncCommitted, "sync.committed", &[BaseSuccess]),
     color(SyncSynced, "sync.synced", &[BaseSuccess]),
     color(SyncSkipped, "sync.skipped", &[BaseWarning]),
+    color(HelpHeader, "help.header", &[TableHeader]),
+    color(HelpFlag, "help.flag", &[BaseSecondary]),
+    // hldr's own: clap styles a flag's `<VALUE>` apart from the flag.
+    color(HelpPlaceholder, "help.placeholder", &[BaseMuted]),
 ];
 
 fn spec(key: Role) -> &'static Spec {
@@ -338,7 +345,6 @@ pub struct Theme {
 }
 
 impl Theme {
-    #[cfg(test)]
     pub fn plain() -> Self {
         Self {
             styles: vec![Vec::new(); SPECS.len()],

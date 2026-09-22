@@ -188,7 +188,8 @@ as `status.warning`, as the site draws them; `describe`, `explain` and
 `version` color keys by depth; `-o json` and `-o yaml` color keys by depth
 and values by type; `diff` colors added and removed lines; `apply`,
 `patch` and `delete` color what happened, and every write its commit and
-sync; errors and warnings go red and yellow. Uncolored output is byte for byte what it was before.
+sync; errors and warnings go red and yellow; `--help` and usage errors
+follow the theme too. Uncolored output is byte for byte what it was before.
 
 Each stream is colored only when it is a terminal, so pipes and
 redirected files stay plain. `--plain` or `NO_COLOR` turns colors off;
@@ -234,15 +235,17 @@ An unset key takes the value of the key it falls back to, so setting a
 | `data.true`, `status.success`, `diff.added`, `apply.created`, `sync.committed`, `sync.synced` | `base.success` |
 | `data.false`, `status.error`, `stderr.error`, `explain.required`, `diff.removed`, `delete.deleted` | `base.danger` |
 | `data.number`, `apply.unchanged` | `base.primary` |
-| `data.null`, `diff.unchanged` | `base.muted` |
+| `data.null`, `diff.unchanged`, `help.placeholder` | `base.muted` |
 | `status.warning`, `stderr.warning`, `apply.configured`, `patch.patched`, `sync.skipped` | `base.warning` |
 | `table.header` | `base.info` |
+| `help.header` | `table.header` |
 | `table.columns` (list) | `base.info`, `base.secondary` |
-| `apply.dryrun` | `base.secondary` |
+| `apply.dryrun`, `help.flag` | `base.secondary` |
 
-`stderr.warning` and the `sync` keys are hldr's own, the `sync` keys for
-`committed`, `synced` and `not synced`; every other key means what it
-means in kubecolor.
+`stderr.warning`, `help.placeholder` and the `sync` keys are hldr's own:
+the `sync` keys color `committed`, `synced` and `not synced`, and
+`help.placeholder` a flag's `<VALUE>` in `--help`. Every other key means
+what it means in kubecolor.
 
 ## Test
 
