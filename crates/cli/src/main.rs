@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
+mod auth;
 mod client;
 mod cmd;
 mod color;
@@ -79,7 +80,7 @@ impl Cli {
         };
         let command = settings.command()?;
         let unpaged = match &self.command {
-            Command::Edit(_) => true,
+            Command::Edit(_) | Command::Auth(_) => true,
             Command::Get(args) => args.watching(),
             _ => false,
         };
@@ -183,6 +184,8 @@ enum Command {
     Validate(cmd::validate::Args),
     /// Print the client, server and content versions
     Version(cmd::version::Args),
+    /// Log in to GitHub, which writes need, or see or forget the login
+    Auth(cmd::auth::Args),
 }
 
 fn main() -> ExitCode {
@@ -265,16 +268,37 @@ fn run(cli: &Cli, env: &Env, config: &Config, term: &Term, out: &mut dyn Write) 
     };
     let cache = env.cache_dir();
     let catalog = |client| Catalog::new(client, cache.as_deref()).warn_on(term);
+    let store = env.state_dir().map(auth::Store::new);
+    let oauth = auth::OAuth::github();
+    let token = || {
+        auth::token(
+            env.github_token.as_deref(),
+            store.as_ref(),
+            &oauth,
+            term,
+            hldr_core::github::now(),
+        )
+    };
     let writer = |client| -> Result<cmd::Writer<'_>> {
         cmd::Writer::new(
             client,
             catalog(client),
             github::API,
             env.editor.clone(),
-            config::github_token(env, config)?,
+            token()?,
         )
     };
     match &cli.command {
+        Command::Auth(args) => {
+            let context = cmd::auth::Context {
+                oauth: &oauth,
+                store: store.as_ref(),
+                env_token: env.github_token.as_deref(),
+                browser: env.browser,
+                stdin_terminal: io::stdin().is_terminal(),
+            };
+            cmd::auth::run(out, term, &context, &connect, args)
+        }
         Command::Edit(args) => cmd::edit::run(out, term, &mut writer(&connect()?)?, args),
         Command::Apply(args) => cmd::apply::run(out, term, &mut writer(&connect()?)?, args),
         Command::Diff(args) => cmd::diff::run(out, term, &mut writer(&connect()?)?, args),
@@ -282,7 +306,6 @@ fn run(cli: &Cli, env: &Env, config: &Config, term: &Term, out: &mut dyn Write) 
         Command::Delete(args) => cmd::delete::run(out, term, &mut writer(&connect()?)?, args),
         Command::Sync(args) => {
             let client = connect()?;
-            let token = || config::github_token(env, config);
             cmd::sync::run(
                 out,
                 term,
@@ -294,7 +317,6 @@ fn run(cli: &Cli, env: &Env, config: &Config, term: &Term, out: &mut dyn Write) 
             )
         }
         Command::History(args) => {
-            let token = || config::github_token(env, config);
             cmd::history::run(out, term, &connect()?, github::API, &token, args)
         }
         Command::Top(args) => cmd::top::run(out, term, &connect()?, args),

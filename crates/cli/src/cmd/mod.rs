@@ -2,6 +2,7 @@
 
 pub mod api_resources;
 pub mod apply;
+pub mod auth;
 pub mod delete;
 pub mod describe;
 pub mod diff;
@@ -104,10 +105,7 @@ impl<'a> Writer<'a> {
     /// Fails before any work when there is nothing to write with.
     pub fn authorize(&self) -> Result<()> {
         if !self.target.github.has_token() {
-            bail!(
-                "writing needs a GitHub token: set HLDR_GITHUB_TOKEN, or `content.token_command` \
-                 in the config file"
-            );
+            bail!("{}", crate::github::NOT_LOGGED_IN);
         }
         Ok(())
     }

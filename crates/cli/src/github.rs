@@ -14,6 +14,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 pub const API: &str = "https://api.github.com";
+
+/// What a write without GitHub access says.
+pub const NOT_LOGGED_IN: &str =
+    "writing needs GitHub access: run `hldr auth login`, or set HLDR_GITHUB_TOKEN";
 const TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_BODY: u64 = 16 * 1024 * 1024;
 
@@ -155,10 +159,7 @@ impl GitHub {
         message: &str,
     ) -> Result<String> {
         if self.token.is_none() {
-            bail!(
-                "writing needs a GitHub token: set HLDR_GITHUB_TOKEN, or `content.token_command` \
-                 in the config file"
-            );
+            bail!("{NOT_LOGGED_IN}");
         }
         let base_tree =
             sha(&self.call("GET", &format!("/git/commits/{parent}"), None)?["tree"]["sha"])?;
@@ -351,9 +352,13 @@ fn github_error(status: u16, body: &str) -> anyhow::Error {
         .and_then(|value| value["message"].as_str().map(str::to_owned))
         .unwrap_or_else(|| body.lines().next().unwrap_or_default().to_owned());
     let hint = match status {
-        401 => ": the token is invalid or expired",
-        403 | 404 => ": the token may lack Contents write access to this repository",
-        _ => "",
+        401 => ": the credential is wrong, expired or revoked; run `hldr auth login`".to_owned(),
+        403 | 404 => format!(
+            ": the credential may not reach this repository with Contents write access; for the \
+             hldr app, install it on the repository at {}",
+            crate::auth::INSTALLATIONS
+        ),
+        _ => String::new(),
     };
     anyhow!("GitHub answered {message} ({status}){hint}")
 }

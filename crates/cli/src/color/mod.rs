@@ -196,6 +196,12 @@ impl Term {
         );
     }
 
+    /// A question on stderr, answered on the same line. Never held: a
+    /// command that asks is never paged.
+    pub fn ask(&self, question: &str) {
+        eprint!("{}", self.err().paint(Role::BaseInfo, question));
+    }
+
     /// Keeps stderr lines back until [`Term::release`]. A pager draws over
     /// the terminal, so a line written meanwhile would land inside it, or,
     /// written before it starts, be hidden behind its screen.

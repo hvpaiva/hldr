@@ -81,8 +81,7 @@ fn on_path(path: Option<&OsStr>, program: &str) -> bool {
 
 /// Stdout, or a pager's stdin. The pager starts on the first write, so a
 /// command that prints nothing never starts one, and whatever runs before
-/// the output, such as `content.token_command` asking to unlock, still has
-/// the terminal.
+/// the output, such as an editor, still has the terminal.
 pub struct Pager<'a> {
     command: Option<Vec<String>>,
     running: Option<(Child, ChildStdin)>,

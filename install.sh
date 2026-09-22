@@ -221,7 +221,8 @@ main() {
 	*":$dir:"*) ;;
 	*) say "$dir is not on PATH; add it to run hldr by name" ;;
 	esac
-	say "next: set server: in ~/.config/hldr/config.yaml (see https://github.com/$repo#use)"
+	say "next: set server: in ~/.config/hldr/config.yaml, then run hldr auth login to write"
+	say "      (see https://github.com/$repo#use)"
 }
 
 main "$@"

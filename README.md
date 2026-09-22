@@ -241,15 +241,44 @@ to sync that exact commit and returns once the site shows it (`--no-sync`
 leaves it to the next poll). A failed edit reopens with the error written
 into the file, as `kubectl edit` does.
 
-Writing needs a GitHub token with Contents write access to the content
-repository only. `HLDR_GITHUB_TOKEN` holds one, or a command prints it,
-run only when something is about to be written:
+Writing needs GitHub access; reading does not. `hldr auth login` shows a
+one-time code and opens `github.com/login/device` (`--no-browser`, or a
+session over SSH, only prints the address). Entering the code there
+authorizes the hldr GitHub App, which is installed on the content
+repository alone with Contents read and write, so what it grants reaches
+nothing else:
 
-```yaml
-server: https://apollo.<tailnet>.ts.net:8443
-content:
-  token_command: [op, read, "op://Private/hldr-content/credential"]
 ```
+hldr auth login                                  # through the browser
+op read op://... | hldr auth login --with-token  # or a token, from stdin
+hldr auth status                                 # who, until when, what it reaches
+hldr auth logout
+```
+
+- **The session renews itself.** The app's token lives eight hours. hldr
+  renews it an hour ahead, so an `edit` left open for a while still
+  writes. The refresh token that renews it lives six months and is spent on
+  use, so the session ends only once hldr goes unused that long, or when it
+  is revoked at <https://github.com/settings/apps/authorizations>. Neither
+  step needs a client secret: the device flow is GitHub's flow for
+  programs that cannot keep one.
+- **A pasted token** is checked with GitHub and kept with the expiry
+  GitHub reports, and hldr warns two weeks before it runs out. It must
+  have Contents write access to the content repository, such as a
+  fine-grained token for that repository alone. On a terminal the prompt
+  does not echo; without a way to hide input, hldr refuses rather than
+  show it.
+- **Where it lives.** The credential is kept in
+  `$XDG_STATE_HOME/hldr/credentials.json` (`~/.local/state/hldr/`): state
+  that belongs to this machine, apart from `~/.config`, which dotfiles
+  repositories often carry. The file is `0600` in a `0700` directory, and
+  hldr refuses one that other users can read, as ssh refuses such a key.
+  Renewals rewrite it under a lock, so two runs never spend the same
+  refresh token.
+- **`HLDR_GITHUB_TOKEN`** wins over the stored credential, for CI.
+- **Logging out** removes the file. GitHub keeps honoring what it granted
+  until it expires or is revoked there, since revoking through the API
+  takes the app's secret.
 
 Resource types, their short names and their table columns come from the
 server (`/api/v1/api-resources`): the built-in kinds, and one per page type
@@ -348,9 +377,8 @@ pager: less -RF
 ```
 
 The pager starts with the first line of output, so a command that prints
-nothing starts none, and a token command asking to unlock runs before
-it. Errors and warnings wait for the pager to exit, so none lands inside
-it. `edit` is never paged.
+nothing starts none. Errors and warnings wait for the pager to exit, so
+none lands inside it. `edit` and `auth` are never paged.
 
 ## Test
 

@@ -316,15 +316,13 @@ fn apply_leaves_out_what_the_server_keeps() {
 }
 
 #[test]
-fn writes_need_a_token() {
+fn writes_need_a_login() {
     let world = World::new();
     let changed = world.file("atlas.yaml", &ATLAS.replace("Old line", "New"));
     let (result, _) = run(&world, None, &["apply", "-f", changed.to_str().unwrap()]);
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("writing needs a GitHub token")
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        crate::github::NOT_LOGGED_IN
     );
 }
 
