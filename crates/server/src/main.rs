@@ -259,6 +259,7 @@ fn site_router(state: AppState) -> Router {
         .route("/favicon.ico", get(favicon_ico))
         .route("/sitemap.xml", get(sitemap))
         .route("/robots.txt", get(robots))
+        .route("/install.sh", get(install_script))
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state.metrics),
@@ -695,6 +696,19 @@ async fn favicon_ico() -> impl IntoResponse {
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
         FAVICON_ICO,
+    )
+}
+
+/// The CLI installer, for `curl -fsSL https://hvpaiva.dev/install.sh | bash`.
+/// The script is the one the latest release attached, with that release's
+/// version stamped in, so it changes with releases, not with this route.
+async fn install_script() -> impl IntoResponse {
+    (
+        StatusCode::FOUND,
+        [(
+            header::LOCATION,
+            "https://github.com/hvpaiva/hldr/releases/latest/download/install.sh",
+        )],
     )
 }
 
@@ -1186,6 +1200,20 @@ mod tests {
             );
             assert!(body.contains("<title>404 · example.test</title>"), "{path}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_installer_points_at_the_latest_release() {
+        let (_dir, state) = state().await;
+        let response = site_router(state)
+            .oneshot(Request::get("/install.sh").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response.headers()[header::LOCATION],
+            "https://github.com/hvpaiva/hldr/releases/latest/download/install.sh"
+        );
     }
 
     #[tokio::test]

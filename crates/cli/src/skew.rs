@@ -39,9 +39,12 @@ pub fn explain(client: &str, server: &str) -> Option<String> {
     };
     Some(format!(
         "client {client} and server {server} {problem}; install the hldr released with the \
-         server (see Install in the hldr README)"
+         server: {INSTALL} -s -- --version {server}"
     ))
 }
+
+/// The installer's one line; `-s -- --version X.Y.Z` picks a release.
+pub const INSTALL: &str = "curl -fsSL https://hvpaiva.dev/install.sh | bash";
 
 /// Major and minor of an `X.Y.Z` release; `None` for anything else.
 fn release(version: &str) -> Option<(u64, u64)> {
@@ -83,6 +86,10 @@ mod tests {
         let beyond = explain("4.3.0", "4.6.1").unwrap();
         assert!(
             beyond.starts_with("client 4.3.0 and server 4.6.1 are more than one minor"),
+            "{beyond}"
+        );
+        assert!(
+            beyond.ends_with("install.sh | bash -s -- --version 4.6.1"),
             "{beyond}"
         );
         let major = explain("5.0.0", "4.6.1").unwrap();

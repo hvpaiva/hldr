@@ -50,9 +50,10 @@ impl Discovery {
         if !served.iter().any(|version| version == SPOKEN) {
             bail!(
                 "the server at {} serves API {}, and this hldr speaks only {SPOKEN}; install the \
-                 hldr released with the server (see Install in the hldr README)",
+                 hldr released with the server: {}",
                 client.base(),
-                served.join(", ")
+                served.join(", "),
+                skew::INSTALL
             );
         }
         let resources: List<ApiResource> =

@@ -101,13 +101,17 @@ jobs:
           cache-to: type=gha,mode=max
 
   # The CLI a release ships: one static binary, since rustls is pure Rust
-  # but for ring's C, which musl-gcc builds. Its checksum rides along.
+  # but for ring's C, which musl-gcc builds. Its checksum rides along, and
+  # a Sigstore provenance attestation that install.sh verifies through gh.
   cli:
     needs: plan
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     env:
       TARGET: x86_64-unknown-linux-musl
     steps:
@@ -128,6 +132,9 @@ jobs:
           cp "target/$TARGET/release/hldr" "dist/hldr-$TARGET"
           "dist/hldr-$TARGET" version --client
           (cd dist && sha256sum "hldr-$TARGET" > "hldr-$TARGET.sha256")
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/hldr-${{ env.TARGET }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cli
@@ -189,6 +196,10 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The installer installs its own release unless told otherwise.
+          sed "s/^readonly stamped='@HLDR_VERSION@'$/readonly stamped='$VERSION'/" install.sh \
+            > "$RUNNER_TEMP/cli/install.sh"
+          grep -qx "readonly stamped='$VERSION'" "$RUNNER_TEMP/cli/install.sh"
           git cliff --unreleased --tag "v$VERSION" --strip all > "$RUNNER_TEMP/notes.md"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

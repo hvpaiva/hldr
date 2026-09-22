@@ -128,6 +128,39 @@ no version; `HLDR_VERSION` and `HLDR_REVISION` stamp it at build time.
 
 ## CLI
 
+### Install
+
+```
+curl -fsSL https://hvpaiva.dev/install.sh | bash
+curl -fsSL https://hvpaiva.dev/install.sh | bash -s -- --version 4.7.0
+```
+
+`/install.sh` redirects to the `install.sh` the latest release attached,
+which has that release's version stamped in. It installs the static
+`hldr-x86_64-unknown-linux-musl` into `~/.local/bin` (`--dir` or
+`HLDR_INSTALL_DIR` changes it) without root, and only after:
+
+- the SHA-256 matches the `.sha256` the release attached;
+- the build provenance verifies with `gh attestation verify`, when `gh` is
+  installed and logged in. Each release since 4.7.0 carries a Sigstore
+  attestation tying the binary to the workflow run that built it, which a
+  checksum from the same place cannot. `--require-attestation` fails
+  instead of skipping; earlier releases have none.
+
+Running it again with the version installed changes nothing, so updating
+is the same line. The script runs from a function called on its last line,
+so a download cut short runs nothing. To read it before running it:
+
+```
+curl -fsSLo install.sh https://hvpaiva.dev/install.sh
+less install.sh
+bash install.sh
+```
+
+From source: `cargo install --locked --path crates/cli`.
+
+### Use
+
 `hldr` reads the private API, so it works from the tailnet. It finds the
 server in `--server`, then `HLDR_SERVER`, then `$XDG_CONFIG_HOME/hldr/config.yaml`
 (`HLDR_CONFIG` names another file):
@@ -136,18 +169,8 @@ server in `--server`, then `HLDR_SERVER`, then `$XDG_CONFIG_HOME/hldr/config.yam
 server: https://apollo.<tailnet>.ts.net:8443
 ```
 
-Each release attaches a static Linux binary, `hldr-x86_64-unknown-linux-musl`,
-with its checksum:
-
-```
-gh release download --repo hvpaiva/hldr --pattern 'hldr-x86_64-unknown-linux-musl*'
-sha256sum -c hldr-x86_64-unknown-linux-musl.sha256
-install -m 755 hldr-x86_64-unknown-linux-musl ~/.local/bin/hldr
-```
-
 `hldr` supports a server one minor release older or newer than itself (see
 [Versions and compatibility](#versions-and-compatibility)).
-From source: `cargo install --locked --path crates/cli`.
 
 ```
 hldr api-resources
@@ -371,19 +394,21 @@ number and compatibility comes from policy, not from matching numbers.
 `.github/workflows/deploy.yml`, on every push to `main`:
 
 1. `plan` compares the deployable inputs (`crates/`, `migrations/`, Cargo
-   files, `Dockerfile`, `config/`, Kamal gems) with the last `vX.Y.Z` tag.
+   files, `Dockerfile`, `config/`, Kamal gems, `install.sh`) with the last
+   `vX.Y.Z` tag.
    Nothing changed: nothing runs. Content is not an input: it ships from
    hldr-content through the sync, not through a release.
 2. The bump comes from Conventional Commits: `fix` patch, `feat` minor,
    `!`/`BREAKING CHANGE` major. Any other change to those inputs still
    takes a patch, so a version always names one image.
 3. `check` (fmt, clippy, tests, cargo-deny), `build`
-   (`ghcr.io/hvpaiva/hldr:X.Y.Z`) and `cli` (the static `hldr`) run in
-   parallel.
+   (`ghcr.io/hvpaiva/hldr:X.Y.Z`) and `cli` (the static `hldr`, its
+   checksum and its provenance attestation) run in parallel.
 4. `deploy` runs `kamal deploy --skip-push`. kamal-proxy switches traffic
    only after `/readyz` answers; otherwise the old container keeps serving.
 5. `release` tags `vX.Y.Z` with git-cliff notes and publishes the GitHub
-   Release with the CLI attached. Tags are the production history.
+   Release with the CLI and `install.sh`, stamped with the version,
+   attached. Tags are the production history.
 
 A daily run retries a release that did not reach production and fails
 when `/healthz` disagrees with the last tag.
