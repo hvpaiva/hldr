@@ -1202,7 +1202,19 @@ mod tests {
             body.contains("- WARNING</span> last sync attempt"),
             "{body}"
         );
-        assert!(body.contains("projects/atlas.yaml"));
+        assert!(body.contains("failed; the revision above is still served</p>"));
+        assert!(
+            !body.contains("projects/atlas.yaml"),
+            "why a sync failed is not public"
+        );
+        let (_, _, sync) = call(api::router(state.clone()), "/api/v1/sync").await;
+        assert!(
+            sync["last_error"]
+                .as_str()
+                .unwrap()
+                .contains("projects/atlas.yaml"),
+            "the private API keeps it"
+        );
 
         let (_, home) = page(site_router(state.clone()), "/", None).await;
         assert!(

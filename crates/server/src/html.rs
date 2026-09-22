@@ -867,17 +867,14 @@ pub fn health(site: &Site, model: &Model, report: &Health<'_>, theme: &Theme) ->
         ok(html! { "source " (report.source) }),
         served,
     ];
-    match &sync.last_error {
-        None => lines.push(ok(html! { "last sync attempt " (attempt) " succeeded" })),
-        Some(message) => {
-            lines.push(warn(html! {
-                "last sync attempt " (attempt) " failed; the revision above is still served:"
-            }));
-            for line in message.lines() {
-                lines.push(html! { p.err { "    " (line) } });
-            }
-        }
-    }
+    // Why it failed is internal, and stays with `hldr sync status` and the
+    // events: the page says only that it did.
+    lines.push(match sync.last_error {
+        None => ok(html! { "last sync attempt " (attempt) " succeeded" }),
+        Some(_) => warn(html! {
+            "last sync attempt " (attempt) " failed; the revision above is still served"
+        }),
+    });
     lines.extend([
         html! { p {} },
         html! { h2.h2 { span.mk { "## " } "ui" } },
