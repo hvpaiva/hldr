@@ -78,8 +78,6 @@ async fn unchanged(
     Ok(existing.as_deref() == Some(source_hash))
 }
 
-/// Writes the columns this release reads. The legacy columns get values
-/// only on a fresh database, where no older release reads them.
 async fn upsert_site(tx: &mut Tx<'_>, spec: &SiteSpec, source_hash: &str) -> Result<bool, Error> {
     let sql = "SELECT source_hash FROM site WHERE id = 1";
     if unchanged(tx, sql, &[], source_hash).await? {
@@ -91,10 +89,8 @@ async fn upsert_site(tx: &mut Tx<'_>, spec: &SiteSpec, source_hash: &str) -> Res
         values,
     } = spec;
     sqlx::query(
-        "INSERT INTO site (
-            id, title, theme, values_json, banner, descriptions, blog_enabled,
-            source_hash, updated_at
-        ) VALUES (1, ?1, ?2, ?3, NULL, '{\"projects\":\"\",\"themes\":\"\"}', 0, ?4, ?5)
+        "INSERT INTO site (id, title, theme, values_json, source_hash, updated_at)
+        VALUES (1, ?1, ?2, ?3, ?4, ?5)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             theme = excluded.theme,
@@ -486,36 +482,6 @@ mod tests {
         fs::write(content.join("projects/broken.yaml"), "kind: Site\n").unwrap();
         let err = sync(db.pool(), &content).await.unwrap_err();
         assert!(err.to_string().contains("projects/broken.yaml"), "{err}");
-        assert_eq!(db.site_config().await.unwrap().spec.title, "example.test");
-    }
-
-    #[tokio::test]
-    async fn keeps_what_the_previous_release_reads() {
-        let (_dir, content, db) = setup().await;
-        sqlx::query(
-            "INSERT INTO site (id, title, theme, banner, descriptions, blog_enabled, source_hash, updated_at)
-             VALUES (1, 'old', 'nord', NULL, '{\"projects\":\"P\",\"themes\":\"T\"}', 1, 'h', 't')",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO profile (id, name, headline, bio, about_source, email, links, source_hash, updated_at)
-             VALUES (1, 'n', 'h', 'b', 'the about page', NULL, '{}', 'h', 't')",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
-        sync(db.pool(), &content).await.unwrap();
-        let legacy: (String, bool, String) = sqlx::query_as(
-            "SELECT descriptions, blog_enabled, (SELECT about_source FROM profile) FROM site",
-        )
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
-        assert_eq!(legacy.0, "{\"projects\":\"P\",\"themes\":\"T\"}");
-        assert!(legacy.1);
-        assert_eq!(legacy.2, "the about page");
         assert_eq!(db.site_config().await.unwrap().spec.title, "example.test");
     }
 

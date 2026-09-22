@@ -939,8 +939,8 @@ mod tests {
     async fn a_database_an_older_release_synced_is_not_ready() {
         let (_dir, state) = state_over(fixtures(), false).await;
         sqlx::query(
-            "INSERT INTO site (id, title, theme, banner, descriptions, blog_enabled, source_hash, updated_at)
-             VALUES (1, 'old', 'nord', NULL, '{}', 0, 'h', 't')",
+            "INSERT INTO site (id, title, theme, source_hash, updated_at)
+             VALUES (1, 'old', 'nord', 'h', 't')",
         )
         .execute(state.db.pool())
         .await
