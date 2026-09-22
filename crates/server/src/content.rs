@@ -658,10 +658,15 @@ mod tests {
         let syncer = Syncer::new(source, db.clone());
 
         let report = syncer.sync(true).await.unwrap().unwrap();
-        assert_eq!(report.projects_upserted, 2);
+        assert_eq!(report.get("Project").upserted, 2);
         assert_eq!(db.sync_state().await.unwrap().revision, Some(first.clone()));
         assert_eq!(
-            db.any_project("atlas").await.unwrap().unwrap().title,
+            db.page("Project", "atlas")
+                .await
+                .unwrap()
+                .unwrap()
+                .page
+                .title(),
             "Atlas"
         );
 

@@ -1,0 +1,24 @@
+kind: Nav
+spec:
+  sections:
+    - name: files
+      title: "{{ site.title }}"
+      items:
+        - page: index
+        - page: about
+        - collection: projects
+          open_max: 8
+        - collection: blog
+    - name: commands
+      items:
+        - command: colorscheme
+        - command: find
+        - command: help
+        - command: checkhealth
+    - name: elsewhere
+      items:
+        - link: profile.links.github
+        - link: profile.email
+          label: mail
+  statusline:
+    count: projects

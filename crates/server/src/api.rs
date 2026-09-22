@@ -4,7 +4,8 @@ use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use hldr_core::api::{self, Problem};
+use hldr_core::api::{self, PageType, Problem};
+use hldr_core::store;
 use tower_http::trace::TraceLayer;
 
 use crate::content::SyncError;
@@ -37,66 +38,151 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/api/v1/api-resources", get(api_resources))
         .route("/api/v1/schema", get(schema))
-        .route("/api/v1/projects", get(projects))
-        .route("/api/v1/projects/{slug}", get(project))
-        .route("/api/v1/profile", get(profile))
-        .route("/api/v1/site", get(site))
-        .route("/api/v1/themes", get(themes))
-        .route("/api/v1/themes/{name}", get(theme))
         .route("/api/v1/sync", get(sync_status).post(sync))
-        .route("/api/v1/posts", get(posts))
-        .route("/api/v1/posts/{slug}", get(post))
+        .route("/api/v1/{resource}", get(list))
+        .route("/api/v1/{resource}/{name}", get(item))
         .fallback(fallback)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
-async fn api_resources() -> Json<api::List<api::ApiResource>> {
-    Json(api::resources())
+/// The page types, each with the collection that is its home.
+async fn page_types(
+    state: &AppState,
+) -> Result<(Vec<store::PageKind>, Vec<store::Collection>), ApiError> {
+    Ok((state.db.page_kinds().await?, state.db.collections().await?))
 }
 
-async fn schema() -> Json<serde_json::Map<String, serde_json::Value>> {
-    Json(api::schemas())
+fn paired<'a>(
+    kinds: &'a [store::PageKind],
+    collections: &'a [store::Collection],
+) -> Vec<PageType<'a>> {
+    kinds
+        .iter()
+        .filter_map(|kind| {
+            let home = collections
+                .iter()
+                .find(|collection| collection.spec.kind == kind.spec.names.kind)?;
+            Some(PageType {
+                collection: &home.name,
+                spec: &kind.spec,
+            })
+        })
+        .collect()
 }
 
-async fn projects(State(state): State<AppState>) -> Result<Response, ApiError> {
-    let items = state.db.all_projects().await?;
-    Ok(Json(api::project_list(&items)).into_response())
+async fn api_resources(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let (kinds, collections) = page_types(&state).await?;
+    Ok(Json(api::resources(&paired(&kinds, &collections))).into_response())
 }
 
-async fn project(
+async fn schema(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let (kinds, collections) = page_types(&state).await?;
+    Ok(Json(api::schemas(&paired(&kinds, &collections))).into_response())
+}
+
+/// `/api/v1/<resource>`: a singleton, or every resource of a kind. Built-in
+/// resources come first, then the page types content declares.
+async fn list(
     State(state): State<AppState>,
-    Path(slug): Path<String>,
+    Path(resource): Path<String>,
 ) -> Result<Response, ApiError> {
-    let Some(project) = state.db.any_project(&slug).await? else {
-        return Ok(not_found(format!("project '{slug}' not found")));
+    let db = &state.db;
+    let json = match resource.as_str() {
+        "site" => Json(api::Site::from(&db.site_config().await?)).into_response(),
+        "profile" => Json(api::Profile::from(&db.profile().await?)).into_response(),
+        "nav" => match db.nav().await? {
+            Some(nav) => Json(api::Nav::from(&nav)).into_response(),
+            None => not_found("the nav is not synced yet"),
+        },
+        "pagekinds" => {
+            let list: api::List<api::PageKind> = api::list("PageKind", &db.page_kinds().await?);
+            Json(list).into_response()
+        }
+        "collections" => {
+            let list: api::List<api::Collection> =
+                api::list("Collection", &db.collections().await?);
+            Json(list).into_response()
+        }
+        "themes" => {
+            let list: api::List<api::Theme> = api::list("Theme", &db.themes().await?);
+            Json(list).into_response()
+        }
+        "pages" => {
+            let pages = db.pages().await?;
+            let list: api::List<api::Page> =
+                api::list("Page", pages.iter().filter(|page| page.page.kind == "Page"));
+            Json(list).into_response()
+        }
+        plural => {
+            let (kinds, collections) = page_types(&state).await?;
+            let Some(page_type) = paired(&kinds, &collections)
+                .into_iter()
+                .find(|page_type| page_type.spec.names.plural == plural)
+            else {
+                return Ok(not_found(format!("no resource type {plural}")));
+            };
+            let order = collections
+                .iter()
+                .find(|collection| collection.name == page_type.collection)
+                .and_then(|collection| collection.spec.order.clone());
+            let pages = db.pages().await?;
+            let mut members: Vec<&store::Page> = pages
+                .iter()
+                .filter(|page| page.page.kind == page_type.spec.names.kind)
+                .collect();
+            store::order(&mut members, order.as_deref());
+            let list: api::List<api::Page> = api::list(&page_type.spec.names.kind, members);
+            Json(list).into_response()
+        }
     };
-    Ok(Json(api::Project::from(&project)).into_response())
+    Ok(json)
 }
 
-async fn profile(State(state): State<AppState>) -> Result<Response, ApiError> {
-    let profile = state.db.profile().await?;
-    Ok(Json(api::Profile::from(&profile)).into_response())
-}
-
-async fn site(State(state): State<AppState>) -> Result<Response, ApiError> {
-    let site = state.db.site_config().await?;
-    Ok(Json(api::Site::from(&site)).into_response())
-}
-
-async fn themes(State(state): State<AppState>) -> Result<Response, ApiError> {
-    let items = state.db.themes().await?;
-    Ok(Json(api::theme_list(&items)).into_response())
-}
-
-async fn theme(
+/// `/api/v1/<resource>/<name>`: one named resource, drafts included.
+async fn item(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path((resource, name)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
-    let Some(theme) = state.db.theme(&name).await? else {
-        return Ok(not_found(format!("theme '{name}' not found")));
+    let db = &state.db;
+    let missing = |singular: &str| not_found(format!("{singular} '{name}' not found"));
+    let json = match resource.as_str() {
+        "site" | "profile" | "nav" => {
+            return Ok(not_found(format!(
+                "{resource} is a singleton: it takes no name"
+            )));
+        }
+        "pagekinds" => match db.page_kinds().await?.iter().find(|k| k.name == name) {
+            Some(kind) => Json(api::PageKind::from(kind)).into_response(),
+            None => missing("pagekind"),
+        },
+        "collections" => match db.collections().await?.iter().find(|c| c.name == name) {
+            Some(collection) => Json(api::Collection::from(collection)).into_response(),
+            None => missing("collection"),
+        },
+        "themes" => match db.theme(&name).await? {
+            Some(theme) => Json(api::Theme::from(&theme)).into_response(),
+            None => missing("theme"),
+        },
+        "pages" => match db.page("Page", &name).await? {
+            Some(page) => Json(api::Page::from(&page)).into_response(),
+            None => missing("page"),
+        },
+        plural => {
+            let (kinds, collections) = page_types(&state).await?;
+            let Some(page_type) = paired(&kinds, &collections)
+                .into_iter()
+                .find(|page_type| page_type.spec.names.plural == plural)
+            else {
+                return Ok(not_found(format!("no resource type {plural}")));
+            };
+            match db.page(&page_type.spec.names.kind, &name).await? {
+                Some(page) => Json(api::Page::from(&page)).into_response(),
+                None => missing(&page_type.spec.names.singular),
+            }
+        }
     };
-    Ok(Json(api::Theme::from(&theme)).into_response())
+    Ok(json)
 }
 
 async fn sync_status(State(state): State<AppState>) -> Result<Response, ApiError> {
@@ -140,23 +226,6 @@ async fn status(
         sync,
         report,
     ))
-}
-
-async fn posts(State(state): State<AppState>) -> Result<Response, ApiError> {
-    if state.db.blog_enabled().await? {
-        return Ok(not_found("no posts"));
-    }
-    Ok(not_found("blog is disabled"))
-}
-
-async fn post(
-    State(state): State<AppState>,
-    Path(slug): Path<String>,
-) -> Result<Response, ApiError> {
-    if state.db.blog_enabled().await? {
-        return Ok(not_found(format!("post '{slug}' not found")));
-    }
-    Ok(not_found("blog is disabled"))
 }
 
 async fn fallback() -> Response {

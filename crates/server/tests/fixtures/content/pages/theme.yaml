@@ -1,0 +1,8 @@
+kind: Page
+metadata:
+  name: theme
+  title: theme
+  description: Fixture palettes.
+spec:
+  buffer: "[colorscheme]"
+  style: colorscheme

@@ -17,6 +17,7 @@ mod api;
 mod content;
 mod html;
 mod listen;
+mod model;
 mod source;
 mod theme;
 
@@ -168,19 +169,15 @@ async fn main() {
 
 fn site_router(state: AppState) -> Router {
     Router::new()
-        .route("/", get(home))
-        .route("/projects", get(projects))
-        .route("/projects/{slug}", get(project))
-        .route("/about", get(about))
-        .route("/profile", get(profile_page))
+        .route("/", get(index))
+        .route("/{name}", get(named))
+        .route("/{collection}/{name}", get(member))
         .route("/help", get(help_page))
         .route("/health", get(health_page))
-        .route("/blog", get(blog))
-        .route("/blog/{slug}", get(blog_post))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .route("/theme", get(themes))
         .route("/theme/{slug}", get(set_theme))
+        .route("/intro.json", get(intro))
         .route("/style.css", get(style_sheet))
         .route("/keys.js", get(keys_js))
         .route("/vim.js", get(vim_js))
@@ -265,14 +262,15 @@ async fn healthz() -> Json<Health> {
 }
 
 /// Ready once this binary has materialized some revision of the content.
-/// A database synced only by an older release has no `site` row yet, so a
-/// deploy that cannot sync keeps the previous container serving.
+/// Only this release writes `nav`, so a database an older release synced is
+/// not ready yet, and a deploy that cannot sync keeps the previous container
+/// serving.
 async fn readyz(State(state): State<AppState>) -> Response {
     let synced = async {
         state.db.ping().await?;
         let sync = state.db.sync_state().await?;
-        let site = state.db.site().await?;
-        Ok::<_, hldr_core::Error>((sync, site.is_some()))
+        let nav = state.db.nav().await?;
+        Ok::<_, hldr_core::Error>((sync, nav.is_some()))
     };
     match synced.await {
         Ok((sync, true)) if sync.synced_at.is_some() => {
@@ -288,32 +286,17 @@ fn unready(reason: &str) -> Response {
     (StatusCode::SERVICE_UNAVAILABLE, Json(Health::unready(None))).into_response()
 }
 
-/// What every page draws around its buffer, loaded once per request.
+/// The content and the visitor's theme, loaded once per request.
 struct Chrome {
-    projects: Vec<hldr_core::ProjectSummary>,
-    site: hldr_core::SiteConfig,
-    profile: hldr_core::Profile,
+    model: model::Model,
     theme: hldr_core::Theme,
 }
 
 impl Chrome {
     async fn load(state: &AppState, headers: &HeaderMap) -> Result<Self, AppError> {
-        let site = state.db.site_config().await?;
-        let theme = current_theme(&state.db, headers, &site).await?;
-        Ok(Self {
-            projects: state.db.projects().await?,
-            profile: state.db.profile().await?,
-            site,
-            theme,
-        })
-    }
-
-    fn tree(&self) -> html::Tree<'_> {
-        html::Tree {
-            projects: &self.projects,
-            site: &self.site,
-            profile: &self.profile,
-        }
+        let model = model::Model::load(&state.db).await?;
+        let theme = current_theme(&state.db, headers, &model.site.spec.theme).await?;
+        Ok(Self { model, theme })
     }
 }
 
@@ -321,7 +304,7 @@ impl Chrome {
 async fn current_theme(
     db: &Db,
     headers: &HeaderMap,
-    site: &hldr_core::SiteConfig,
+    default: &str,
 ) -> Result<hldr_core::Theme, AppError> {
     if let Some(slug) = theme::cookie_slug(headers)
         && let Some(picked) = db.theme(slug).await?
@@ -329,86 +312,156 @@ async fn current_theme(
         return Ok(picked);
     }
     Ok(db
-        .theme(&site.theme)
+        .theme(default)
         .await?
         .ok_or(hldr_core::Error::Invariant("default theme missing"))?)
 }
 
-async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
+async fn index(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
     let chrome = Chrome::load(&state, &headers).await?;
-    let highlighted = state.db.highlighted_projects().await?;
-    Ok(html::home(
+    match chrome.model.page("index") {
+        Some(page) => render_page(&state, &chrome, page).await,
+        None => Ok(render_not_found(&state, &headers, "/", "path not found.").await),
+    }
+}
+
+/// `/<name>`: a page, or a collection's listing.
+async fn named(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let chrome = Chrome::load(&state, &headers).await?;
+    let model = &chrome.model;
+    if let Some(page) = model
+        .page(&name)
+        .filter(|page| page.page.route().as_deref() == Some(uri.path()))
+    {
+        return render_page(&state, &chrome, page).await;
+    }
+    let collection = model
+        .collection(&name)
+        .filter(|collection| uri.path() == format!("/{}", collection.name));
+    match collection {
+        Some(collection) if collection.spec.enabled => {
+            Ok(html::listing(&state.site, model, &chrome.theme, collection).into_response())
+        }
+        Some(_) => Ok(render_not_found(
+            &state,
+            &headers,
+            uri.path(),
+            &format!("{name} is disabled."),
+        )
+        .await),
+        None => Ok(render_not_found(&state, &headers, uri.path(), "path not found.").await),
+    }
+}
+
+/// `/<collection>/<name>`: a page of a collection.
+async fn member(
+    State(state): State<AppState>,
+    Path((collection, name)): Path<(String, String)>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let chrome = Chrome::load(&state, &headers).await?;
+    let model = &chrome.model;
+    let path = format!("/{collection}/{name}");
+    // Only the name is decoded, as axum decodes a path parameter; the
+    // collection must be spelled as its route.
+    let spelled = uri.path().split('/').nth(1) == Some(collection.as_str());
+    let Some(home) = model.collection(&collection).filter(|_| spelled) else {
+        return Ok(render_not_found(&state, &headers, uri.path(), "path not found.").await);
+    };
+    if !home.spec.enabled {
+        let detail = format!("{collection} is disabled.");
+        return Ok(render_not_found(&state, &headers, &path, &detail).await);
+    }
+    match model.member(home, &name) {
+        Some(page) => render_page(&state, &chrome, page).await,
+        None => {
+            let singular = model
+                .kind_of(home)
+                .map_or("page", |kind| kind.names.singular.as_str());
+            let detail = format!("{name}: no such {singular}");
+            Ok(render_not_found(&state, &headers, &path, &detail).await)
+        }
+    }
+}
+
+async fn render_page(
+    state: &AppState,
+    chrome: &Chrome,
+    page: &hldr_core::Page,
+) -> Result<Response, AppError> {
+    let content = state
+        .db
+        .content(&page.page.kind, &page.page.name)
+        .await?
+        .unwrap_or_default();
+    let themes = if page.page.spec.style == hldr_core::spec::PageStyle::Colorscheme {
+        let mut themes = state.db.themes().await?;
+        themes.retain(|theme| !theme.hidden);
+        themes
+    } else {
+        Vec::new()
+    };
+    Ok(html::page(
         &state.site,
-        &chrome.tree(),
-        &chrome.profile,
-        &highlighted,
+        &chrome.model,
         &chrome.theme,
+        page,
+        &content,
+        &themes,
     )
     .into_response())
 }
 
-async fn projects(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    let chrome = Chrome::load(&state, &headers).await?;
-    Ok(html::projects_index(&state.site, &chrome.tree(), &chrome.theme).into_response())
-}
-
-async fn about(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    let chrome = Chrome::load(&state, &headers).await?;
-    Ok(html::about(&state.site, &chrome.tree(), &chrome.profile, &chrome.theme).into_response())
-}
-
-async fn themes(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    let chrome = Chrome::load(&state, &headers).await?;
-    let themes = state.db.themes().await?;
-    Ok(html::themes_index(&state.site, &chrome.tree(), &themes, &chrome.theme).into_response())
-}
-
-async fn project(
-    State(state): State<AppState>,
-    Path(slug): Path<String>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    let Some(project) = state.db.project(&slug).await? else {
-        return Ok(render_not_found(
-            &state,
-            &headers,
-            &format!("/projects/{slug}"),
-            &format!("{slug}: no such project"),
-        )
-        .await);
-    };
-    let chrome = Chrome::load(&state, &headers).await?;
-    Ok(html::project_page(&state.site, &chrome.tree(), &project, &chrome.theme).into_response())
-}
-
-async fn blog(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError> {
-    blog_disabled(&state, &headers, "/blog").await
-}
-
-async fn blog_post(
-    State(state): State<AppState>,
-    Path(slug): Path<String>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    blog_disabled(&state, &headers, &format!("/blog/{slug}")).await
-}
-
+/// The URLs worth indexing: the index, the collections, the other markdown
+/// pages, the manual, then every collection's pages.
 async fn sitemap(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
-    let projects = state.db.projects().await?;
+    let model = model::Model::load(&state.db).await?;
+    let enabled: Vec<&hldr_core::Collection> = model
+        .collections
+        .iter()
+        .filter(|collection| collection.spec.enabled)
+        .collect();
+    let mut paths = vec!["/".to_owned()];
+    paths.extend(
+        enabled
+            .iter()
+            .map(|collection| format!("/{}", collection.name)),
+    );
+    let mut pages: Vec<&hldr_core::Page> = model
+        .pages
+        .iter()
+        .filter(|page| {
+            page.page.collection.is_none()
+                && !page.page.spec.draft
+                && page.page.spec.style == hldr_core::spec::PageStyle::Markdown
+                && !matches!(page.page.name.as_str(), "index" | "not-found")
+        })
+        .collect();
+    pages.sort_by(|a, b| a.page.name.cmp(&b.page.name));
+    paths.extend(pages.iter().filter_map(|page| page.page.route()));
+    paths.push("/help".to_owned());
+    for collection in &enabled {
+        paths.extend(
+            model
+                .members(collection)
+                .iter()
+                .filter_map(|page| page.page.route()),
+        );
+    }
     let mut body = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n",
     );
-    for path in ["/", "/projects", "/about", "/profile", "/help"] {
+    for path in paths {
         body.push_str(&format!(
             "  <url><loc>{}{path}</loc></url>\n",
             state.site.origin
-        ));
-    }
-    for project in projects {
-        body.push_str(&format!(
-            "  <url><loc>{}/projects/{}</loc></url>\n",
-            state.site.origin, project.slug
         ));
     }
     body.push_str("</urlset>\n");
@@ -416,6 +469,32 @@ async fn sitemap(State(state): State<AppState>) -> Result<impl IntoResponse, App
         [(header::CONTENT_TYPE, "application/xml; charset=utf-8")],
         body,
     ))
+}
+
+/// What the vim.js intro shows from content: the banner and the line under
+/// the version, from the site's values. Fetched when the intro opens, so
+/// pages carry none of it.
+async fn intro(State(state): State<AppState>) -> Result<Response, AppError> {
+    let site = state.db.site_config().await?;
+    let values = &site.spec.values;
+    let mut out = serde_json::Map::new();
+    if let Some(banner) = values.get("banner")
+        && banner.get("art").is_some_and(serde_json::Value::is_string)
+        && banner.get("alt").is_some_and(serde_json::Value::is_string)
+    {
+        out.insert(
+            "banner".to_owned(),
+            serde_json::json!({ "art": banner["art"], "alt": banner["alt"] }),
+        );
+    }
+    if let Some(line) = values.get("intro").filter(|line| line.is_string()) {
+        out.insert("intro".to_owned(), line.clone());
+    }
+    Ok((
+        [(header::CACHE_CONTROL, "no-cache")],
+        Json(serde_json::Value::Object(out)),
+    )
+        .into_response())
 }
 
 async fn robots(State(state): State<AppState>) -> impl IntoResponse {
@@ -436,20 +515,12 @@ async fn style_sheet() -> impl IntoResponse {
     )
 }
 
-async fn profile_page(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Response, AppError> {
-    let chrome = Chrome::load(&state, &headers).await?;
-    Ok(html::profile(&state.site, &chrome.tree(), &chrome.profile, &chrome.theme).into_response())
-}
-
 async fn help_page(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let chrome = Chrome::load(&state, &headers).await?;
-    Ok(html::help(&state.site, &chrome.tree(), &chrome.theme).into_response())
+    Ok(html::help(&state.site, &chrome.model, &chrome.theme).into_response())
 }
 
 async fn health_page(
@@ -457,19 +528,33 @@ async fn health_page(
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
     let chrome = Chrome::load(&state, &headers).await?;
+    let model = &chrome.model;
     let sync = state.db.sync_state().await?;
     let themes = state.db.themes().await?.len();
     let origin = state.syncer.source().origin();
+    let counts = model
+        .collections
+        .iter()
+        .filter(|collection| collection.spec.enabled)
+        .filter_map(|collection| {
+            let kind = model.kind_of(collection)?;
+            Some((
+                model.all_members(collection).len(),
+                kind.names.singular.as_str(),
+                kind.names.plural.as_str(),
+            ))
+        })
+        .collect();
     let report = html::Health {
         source: state.syncer.source().describe(),
         repository: origin.as_ref().map(|(repo, _)| repo.as_str()),
         sync: &sync,
-        projects: state.db.project_count().await?,
+        counts,
         themes,
     };
     Ok((
         [(header::CACHE_CONTROL, "no-store")],
-        html::health(&state.site, &chrome.tree(), &report, &chrome.theme),
+        html::health(&state.site, model, &report, &chrome.theme),
     )
         .into_response())
 }
@@ -505,7 +590,10 @@ async fn favicon(
     };
     let theme = match asked {
         Some(theme) => theme,
-        None => current_theme(&state.db, &headers, &state.db.site_config().await?).await?,
+        None => {
+            let site = state.db.site_config().await?;
+            current_theme(&state.db, &headers, &site.spec.theme).await?
+        }
     };
     Ok((
         [
@@ -536,30 +624,29 @@ async fn not_found(State(state): State<AppState>, uri: Uri, headers: HeaderMap) 
     render_not_found(&state, &headers, uri.path(), "path not found.").await
 }
 
-async fn blog_disabled(
-    state: &AppState,
-    headers: &HeaderMap,
-    path: &str,
-) -> Result<Response, AppError> {
-    let detail = if state.db.blog_enabled().await? {
-        "path not found."
-    } else {
-        "blog is disabled."
-    };
-    Ok(render_not_found(state, headers, path, detail).await)
-}
-
 async fn render_not_found(
     state: &AppState,
     headers: &HeaderMap,
     path: &str,
     detail: &str,
 ) -> Response {
-    match Chrome::load(state, headers).await {
-        Ok(chrome) => {
-            let page = html::not_found(&state.site, &chrome.tree(), path, detail, &chrome.theme);
-            (StatusCode::NOT_FOUND, page).into_response()
-        }
+    let rendered = async {
+        let chrome = Chrome::load(state, headers).await?;
+        let content = match chrome.model.not_found() {
+            Some(page) => state.db.content(&page.page.kind, &page.page.name).await?,
+            None => None,
+        };
+        Ok::<_, AppError>(html::not_found(
+            &state.site,
+            &chrome.model,
+            &chrome.theme,
+            path,
+            detail,
+            content.as_deref(),
+        ))
+    };
+    match rendered.await {
+        Ok(page) => (StatusCode::NOT_FOUND, page).into_response(),
         Err(error) => error.into_response(),
     }
 }
@@ -703,17 +790,13 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(list["kind"], "ProjectList");
         assert_eq!(list["items"][0]["metadata"]["name"], "atlas");
-        assert!(
-            list["items"][0]["spec"]["body"]
-                .as_str()
-                .unwrap()
-                .contains("What it is")
-        );
+        assert_eq!(list["items"][0]["spec"]["content"]["file"], "atlas.md");
 
         let (status, _, project) = call(api::router(state.clone()), "/api/v1/projects/atlas").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(project["kind"], "Project");
-        assert_eq!(project["spec"]["highlight"], 1);
+        assert_eq!(project["metadata"]["highlight"], 1);
+        assert!(project["metadata"]["created_at"].is_string());
 
         let (status, _, profile) = call(api::router(state.clone()), "/api/v1/profile").await;
         assert_eq!(status, StatusCode::OK);
@@ -722,7 +805,35 @@ mod tests {
         let (status, _, site) = call(api::router(state.clone()), "/api/v1/site").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(site["kind"], "Site");
-        assert_eq!(site["spec"]["blog"]["enabled"], false);
+        assert_eq!(
+            site["spec"]["values"]["about"],
+            "First line of the about page."
+        );
+
+        for (path, kind) in [
+            ("/api/v1/nav", "Nav"),
+            ("/api/v1/pagekinds/project", "PageKind"),
+            ("/api/v1/collections/blog", "Collection"),
+            ("/api/v1/pages/about", "Page"),
+        ] {
+            let (status, _, resource) = call(api::router(state.clone()), path).await;
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert_eq!(resource["kind"], kind, "{path}");
+        }
+        let (_, _, pages) = call(api::router(state.clone()), "/api/v1/pages").await;
+        assert_eq!(pages["kind"], "PageList");
+        assert_eq!(
+            pages["items"].as_array().unwrap().len(),
+            4,
+            "only kind Page"
+        );
+        let (status, _, posts) = call(api::router(state.clone()), "/api/v1/posts").await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a disabled collection still serves its type"
+        );
+        assert_eq!(posts["kind"], "PostList");
     }
 
     #[tokio::test]
@@ -770,7 +881,7 @@ mod tests {
 
         let (status, _, sync) = post(api::router(state.clone()), "/api/v1/sync").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(sync["report"]["projects_skipped"], 2);
+        assert_eq!(sync["report"]["kinds"]["Project"]["skipped"], 2);
         assert!(sync["repository"].is_null());
 
         let request = Request::post("/api/v1/sync")
@@ -787,14 +898,7 @@ mod tests {
     async fn invalid_content_keeps_the_previous_revision() {
         let content = fixture_copy();
         let (_dir, state) = state_over(content.path().to_owned(), true).await;
-        std::fs::write(
-            content.path().join("projects/atlas.md"),
-            "---
-kind: Site
----
-",
-        )
-        .unwrap();
+        std::fs::write(content.path().join("projects/atlas.yaml"), "kind: Site\n").unwrap();
 
         let (status, content_type, body) = post(api::router(state.clone()), "/api/v1/sync").await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -803,18 +907,18 @@ kind: Site
             body["detail"]
                 .as_str()
                 .unwrap()
-                .contains("projects/atlas.md"),
+                .contains("projects/atlas.yaml"),
             "{body}"
         );
 
         let (_, _, project) = call(api::router(state.clone()), "/api/v1/projects/atlas").await;
-        assert_eq!(project["spec"]["title"], "Atlas");
+        assert_eq!(project["metadata"]["title"], "Atlas");
         let (_, _, sync) = call(api::router(state.clone()), "/api/v1/sync").await;
         assert!(
             sync["last_error"]
                 .as_str()
                 .unwrap()
-                .contains("projects/atlas.md")
+                .contains("projects/atlas.yaml")
         );
     }
 
@@ -829,6 +933,21 @@ kind: Site
         let (status, _, body) = call(site_router(state.clone()), "/readyz").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn a_database_an_older_release_synced_is_not_ready() {
+        let (_dir, state) = state_over(fixtures(), false).await;
+        sqlx::query(
+            "INSERT INTO site (id, title, theme, banner, descriptions, blog_enabled, source_hash, updated_at)
+             VALUES (1, 'old', 'nord', NULL, '{}', 0, 'h', 't')",
+        )
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+        state.db.record_sync(Some(&"a".repeat(40))).await.unwrap();
+        let (status, _, _) = call(site_router(state.clone()), "/readyz").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -859,7 +978,7 @@ kind: Site
     #[tokio::test]
     async fn pages_take_their_identity_from_content() {
         let (_dir, state) = state().await;
-        for path in ["/", "/projects", "/about", "/profile", "/theme"] {
+        for path in ["/", "/projects", "/projects/atlas", "/about", "/theme"] {
             let (status, body) = page(site_router(state.clone()), path, None).await;
             assert_eq!(status, StatusCode::OK, "{path}");
             assert!(body.contains("example.test"), "{path}");
@@ -871,8 +990,120 @@ kind: Site
         }
         let (_, home) = page(site_router(state.clone()), "/", None).await;
         assert!(home.contains("AMPLE"), "banner");
+        assert!(
+            home.contains("<title>Test Author</title>"),
+            "standalone title"
+        );
+        assert!(
+            home.contains(
+                r#"<p>First line of the about page. More in <a href="/about">about.md</a>.</p>"#
+            ),
+            "{home}"
+        );
+        assert!(
+            home.contains(r#"src      <a href="https://github.com/example"#)
+                || !home.contains("src "),
+            "no source link in the fixture"
+        );
         let (_, projects) = page(site_router(state.clone()), "/projects", None).await;
         assert!(projects.contains("Fixture projects."));
+        assert!(projects.contains("&quot; projects/: 1 indexed, ordered by highlight"));
+        let (_, about) = page(site_router(state.clone()), "/about", None).await;
+        assert!(about.contains("<title>about · example.test</title>"));
+        assert!(about.contains("Contact"));
+    }
+
+    #[tokio::test]
+    async fn a_project_page_shows_its_frontmatter_and_its_type_footer() {
+        let (_dir, state) = state().await;
+        let (_, body) = page(site_router(state.clone()), "/projects/atlas", None).await;
+        let frontmatter = concat!(
+            r#"<p class="mk">---</p>"#,
+            r#"<p><span class="k">title</span><span class="mk">:</span> <span class="s">Atlas</span></p>"#,
+            r#"<p><span class="k">tagline</span><span class="mk">:</span> <span class="s">A highlighted project.</span></p>"#,
+        );
+        assert!(body.contains(frontmatter), "{body}");
+        assert!(
+            body.contains(r#"<p class="mk">---</p><p></p><h2 class="h2">"#),
+            "{body}"
+        );
+        assert!(
+            body.contains(r#"<p><span class="n">git clone</span> <a href="https://github.com/example/atlas">github.com/example/atlas</a></p><p><a href="/projects">← projects/</a></p></article>"#),
+            "{body}"
+        );
+        assert!(body.contains(r#""@type":"SoftwareSourceCode""#));
+        assert!(body.contains(r#""programmingLanguage":["rust"]"#));
+    }
+
+    #[tokio::test]
+    async fn the_tree_follows_the_nav() {
+        let (_dir, state) = state().await;
+        let (_, body) = page(site_router(state.clone()), "/about", None).await;
+        assert!(body.contains(r#"<summary class="hd">example.test</summary>"#));
+        assert!(body.contains(r#"<div class="row dir off"><span class="ic">▸</span><span class="grow">blog/</span><span class="badge off">off</span></div>"#));
+        assert!(body.contains(r#"<a href="/projects/atlas" data-file="projects/atlas.md">atlas.md</a><span class="badge">active</span>"#));
+        assert!(body.contains(r#"<a href="https://github.com/example" rel="me">github</a>"#));
+        assert!(body.contains(r#"<a href="mailto:author@example.test">mail</a>"#));
+        assert!(
+            body.contains(r#"<a href="/projects">1 project</a> · "#),
+            "statusline"
+        );
+        assert!(!body.contains("sketch"), "drafts stay off the tree");
+    }
+
+    #[tokio::test]
+    async fn routes_answer_404_as_before() {
+        let (_dir, state) = state().await;
+        for (path, detail) in [
+            ("/profile", "path not found."),
+            ("/index", "path not found."),
+            ("/not-found", "path not found."),
+            ("/projects/", "path not found."),
+            ("/projects/nope", "nope: no such project"),
+            ("/projects/sketch", "sketch: no such project"),
+            ("/blog", "blog is disabled."),
+            ("/blog/post", "blog is disabled."),
+            ("/theme/gone", "no such theme."),
+            ("/deep/nope/path", "path not found."),
+        ] {
+            let (status, body) = page(site_router(state.clone()), path, None).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+            assert!(
+                body.contains(&format!("<p class=\"c\">&quot; {detail}</p>")),
+                "{path}: {body}"
+            );
+            assert!(
+                body.contains(r#"<p><a href="/">README.md</a>      start here</p>"#),
+                "{path}: the not-found page"
+            );
+            assert!(body.contains("<title>404 · example.test</title>"), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_sitemap_lists_what_is_published() {
+        let (_dir, state) = state().await;
+        let (_, body) = page(site_router(state.clone()), "/sitemap.xml", None).await;
+        let locs: Vec<&str> = body
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("<url><loc>https://example.test"))
+            .map(|line| line.trim_end_matches("</loc></url>"))
+            .collect();
+        assert_eq!(
+            locs,
+            ["/", "/projects", "/about", "/help", "/projects/atlas"]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_intro_reads_the_site_values() {
+        let (_dir, state) = state().await;
+        let (status, content_type, intro) = call(site_router(state.clone()), "/intro.json").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(content_type, "application/json");
+        assert_eq!(intro["banner"]["alt"], "EXAMPLE");
+        assert_eq!(intro["banner"]["art"], "EX\nAMPLE");
+        assert_eq!(intro["intro"], "example.test · a fixture");
     }
 
     #[tokio::test]
@@ -894,18 +1125,14 @@ kind: Site
         assert!(!body.contains("WARNING"));
         assert!(!body.contains("<script>"), "no inline script");
 
-        std::fs::write(
-            content.path().join("projects/atlas.md"),
-            "---\nkind: Site\n---\n",
-        )
-        .unwrap();
+        std::fs::write(content.path().join("projects/atlas.yaml"), "kind: Site\n").unwrap();
         assert!(state.syncer.sync(false).await.is_err());
         let (_, body) = page(site_router(state.clone()), "/health", None).await;
         assert!(
             body.contains("- WARNING</span> last sync attempt"),
             "{body}"
         );
-        assert!(body.contains("projects/atlas.md"));
+        assert!(body.contains("projects/atlas.yaml"));
 
         let (_, home) = page(site_router(state.clone()), "/", None).await;
         assert!(
@@ -960,7 +1187,8 @@ kind: Site
 
         let (_, _, site) = call(api::router(state.clone()), "/api/v1/site").await;
         assert_eq!(site["spec"]["theme"], "nord");
-        assert_eq!(site["spec"]["descriptions"]["themes"], "Fixture palettes.");
+        let (_, _, picker) = call(api::router(state.clone()), "/api/v1/pages/theme").await;
+        assert_eq!(picker["metadata"]["description"], "Fixture palettes.");
     }
 
     #[tokio::test]
@@ -970,21 +1198,31 @@ kind: Site
         let (status, _, resources) =
             call(api::router(state.clone()), "/api/v1/api-resources").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(resources["items"][0]["name"], "projects");
-        assert_eq!(
-            resources["items"][0]["source"]["path"],
-            "projects/{name}.md"
-        );
+        assert_eq!(resources["items"][0]["name"], "site");
+        let projects = resources["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["name"] == "projects")
+            .unwrap();
+        assert_eq!(projects["source"]["path"], "projects/{name}.yaml");
+        assert_eq!(projects["short_names"], serde_json::json!(["proj", "p"]));
 
         let (status, _, schema) = call(api::router(state.clone()), "/api/v1/schema").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(schema["Project"]["title"], "Project");
+        assert_eq!(schema["Post"]["title"], "Post");
     }
 
     #[tokio::test]
     async fn private_api_answers_problems() {
         let (_dir, state) = state().await;
-        for path in ["/api/v1/projects/nope", "/api/v1/posts", "/nope"] {
+        for path in [
+            "/api/v1/projects/nope",
+            "/api/v1/nope",
+            "/api/v1/site/x",
+            "/nope",
+        ] {
             let (status, content_type, body) = call(api::router(state.clone()), path).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
             assert_eq!(content_type, "application/problem+json", "{path}");

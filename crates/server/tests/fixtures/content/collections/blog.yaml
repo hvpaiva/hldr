@@ -1,0 +1,6 @@
+kind: Collection
+metadata:
+  name: blog
+spec:
+  kind: Post
+  enabled: false

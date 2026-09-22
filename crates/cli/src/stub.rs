@@ -16,13 +16,15 @@ pub struct Stub {
     pub extra: Arc<std::sync::Mutex<Vec<Value>>>,
     /// What `/healthz` reports as the server's version.
     pub version: Arc<std::sync::Mutex<String>>,
+    /// What `/api/v1/sync` reports as the served revision.
+    pub revision: Arc<std::sync::Mutex<String>>,
 }
 
 pub fn resource(name: &str, singular: &str, kind: &str) -> Value {
     json!({
         "name": name, "singular": singular, "short_names": [], "kind": kind,
         "singleton": false, "verbs": ["get", "describe", "explain"],
-        "source": {"path": format!("{name}/{{name}}.md"), "format": "markdown"},
+        "source": {"path": format!("{name}/{{name}}.yaml")},
         "columns": [{"name": "NAME", "json_path": ".metadata.name", "wide": false}],
     })
 }
@@ -54,16 +56,30 @@ impl Stub {
         *self.version.lock().unwrap() = version.to_owned();
     }
 
+    pub fn set_revision(&self, revision: &str) {
+        *self.revision.lock().unwrap() = revision.to_owned();
+    }
+
     /// Serves the stub; see [`spawn`].
     pub fn serve(&self) -> String {
         let stub = self.clone();
         let version = Arc::clone(&self.version);
+        let revision = Arc::clone(&self.revision);
         let app = Router::new()
             .route(
                 "/healthz",
                 get(move || {
                     let version = version.lock().unwrap().clone();
                     async move { axum::Json(json!({"status": "ok", "version": version})) }
+                }),
+            )
+            .route(
+                "/api/v1/sync",
+                get(move || {
+                    let revision = revision.lock().unwrap().clone();
+                    async move {
+                        axum::Json(json!({"kind": "SyncStatus", "source": "stub", "revision": revision}))
+                    }
                 }),
             )
             .route(
@@ -184,9 +200,21 @@ pub mod hub {
         json!({
             "name": name, "singular": singular, "short_names": [], "kind": kind,
             "singleton": singleton, "verbs": verbs,
-            "source": {"path": path, "format": if path.ends_with(".md") { "markdown" } else { "yaml" }},
+            "source": {"path": path},
             "columns": [],
         })
+    }
+
+    /// The page type the hub's content declares, as the server lists it.
+    fn project_kind() -> Value {
+        json!({"kind": "PageKind", "metadata": {"name": "project"}, "status": {}, "spec": {
+            "names": {"kind": "Project", "singular": "project", "plural": "projects"},
+            "fields": {
+                "tagline": {"type": "string", "required": true},
+                "status": {"type": "enum", "values": ["active", "wip", "archived"], "required": true},
+                "tags": {"type": "list"},
+            },
+        }})
     }
 
     pub fn serve(repo: Shared) -> String {
@@ -195,8 +223,22 @@ pub mod hub {
                 "/api/v1/api-resources",
                 get(|| async {
                     Json(json!({"kind": "APIResourceList", "items": [
-                        resource("projects", "project", "Project", "projects/{name}.md", false),
                         resource("site", "site", "Site", "site.yaml", true),
+                        resource("pages", "page", "Page", "pages/{name}.yaml", false),
+                        resource("projects", "project", "Project", "projects/{name}.yaml", false),
+                    ]}))
+                }),
+            )
+            .route(
+                "/api/v1/pagekinds",
+                get(|| async { Json(json!({"kind": "PageKindList", "items": [project_kind()]})) }),
+            )
+            .route(
+                "/api/v1/collections",
+                get(|| async {
+                    Json(json!({"kind": "CollectionList", "items": [
+                        {"kind": "Collection", "metadata": {"name": "projects"}, "status": {},
+                         "spec": {"kind": "Project", "enabled": true}},
                     ]}))
                 }),
             )
@@ -233,7 +275,8 @@ pub mod hub {
         let revision = body.and_then(|Json(b)| b["revision"].as_str().map(str::to_owned));
         repo.synced.push(revision);
         let mut answer = status_body(&repo);
-        answer["report"] = json!({"projects_upserted": 1});
+        answer["report"] =
+            json!({"kinds": {"Project": {"upserted": 1, "skipped": 0, "deleted": 0}}});
         Json(answer)
     }
 

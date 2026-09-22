@@ -120,8 +120,10 @@ fn run(cli: &Cli, env: &Env, out: &mut dyn Write) -> Result<bool> {
         Command::Patch(args) => cmd::patch::run(out, &mut writer(&connect()?)?, args),
         Command::Delete(args) => cmd::delete::run(out, &mut writer(&connect()?)?, args),
         Command::Sync(args) => {
+            let client = connect()?;
             let token = || config::github_token(env, &config);
-            cmd::sync::run(out, &connect()?, github::API, &token, args)
+            let mut catalog = Catalog::new(&client, cache.as_deref());
+            cmd::sync::run(out, &client, &mut catalog, github::API, &token, args)
         }
         Command::Version(args) if args.client_only() => cmd::version::run(out, None, args),
         Command::Version(args) => cmd::version::run(out, Some(&connect()?), args),

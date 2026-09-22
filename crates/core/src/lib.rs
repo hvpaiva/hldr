@@ -7,14 +7,14 @@ pub mod github;
 #[cfg(feature = "store")]
 pub mod index;
 pub mod manifest;
+pub mod spec;
 #[cfg(feature = "store")]
 pub mod store;
+pub mod template;
 pub mod tree;
 pub mod types;
 
 mod error;
-#[cfg(feature = "store")]
-mod markdown;
 #[cfg(test)]
 mod testing;
 
@@ -23,7 +23,7 @@ pub use api::SyncReport;
 pub use db::Db;
 pub use error::Error;
 #[cfg(feature = "store")]
-pub use store::{Profile, Project, ProjectSummary, SiteConfig, SyncState, Theme};
+pub use store::{Collection, Nav, Page, PageKind, Profile, Site, SyncState, Theme};
 
 /// Release version, stamped at build time through `HLDR_VERSION`.
 ///

@@ -1,0 +1,12 @@
+kind: Collection
+metadata:
+  name: projects
+spec:
+  kind: Project
+  enabled: true
+  description: Fixture projects.
+  order: highlight
+  badge: status
+  columns:
+    - {field: status, width: 9}
+    - {field: tags, header: stack}

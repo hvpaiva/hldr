@@ -18,8 +18,9 @@ pub struct Args {
     write: super::WriteArgs,
 }
 
-/// Removes the resources' files in one commit; git keeps them in history.
-/// A missing name is reported and the others are still deleted.
+/// Removes the resources' files in one commit, a page's markdown with its
+/// manifest; git keeps them in history. A missing name is reported and the
+/// others are still deleted.
 pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<bool> {
     writer.authorize()?;
     let resource = writer.resource(&args.kind, "delete")?;
@@ -32,10 +33,18 @@ pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<
     let mut labels = Vec::new();
     for name in &args.names {
         let path = content::path_for(&resource, Some(name))?;
-        if writer.target.github.file(&head, &path)?.is_none() {
+        let Some(text) = writer.target.github.file(&head, &path)? else {
             eprintln!("error: {} {name:?} not found", resource.singular);
             complete = false;
             continue;
+        };
+        if let Some(markdown) = content::named_content(&path, &text)
+            && writer.target.github.file(&head, &markdown)?.is_some()
+        {
+            changes.push(Change {
+                path: markdown,
+                content: None,
+            });
         }
         changes.push(Change {
             path,
@@ -46,9 +55,11 @@ pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<
     if changes.is_empty() {
         return Ok(false);
     }
+    let resources = writer.resources()?;
     Publish {
         client: writer.client,
         target: &writer.target,
+        resources: &resources,
         parent: &head,
         message: args.write.message(&format!("delete {}", labels.join(", "))),
         sync: args.write.sync(),

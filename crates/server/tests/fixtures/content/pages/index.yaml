@@ -1,0 +1,11 @@
+kind: Page
+metadata:
+  name: index
+  title: "{{ profile.name }}"
+  description: "{{ profile.bio }}"
+spec:
+  buffer: README.md
+  standalone_title: true
+  json_ld: person
+  content:
+    file: index.md

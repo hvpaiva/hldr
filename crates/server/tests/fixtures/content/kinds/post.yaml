@@ -1,0 +1,8 @@
+kind: PageKind
+metadata:
+  name: post
+spec:
+  names: {kind: Post, singular: post, plural: posts}
+  fields:
+    summary: {type: string, required: true}
+  summary: summary

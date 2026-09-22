@@ -1,0 +1,9 @@
+kind: Page
+metadata:
+  name: about
+  title: about
+  description: "{{ profile.headline }}"
+spec:
+  json_ld: person
+  content:
+    file: about.md

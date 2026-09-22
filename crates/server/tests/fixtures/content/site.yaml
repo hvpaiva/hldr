@@ -1,13 +1,12 @@
 kind: Site
-title: example.test
-theme: nord
-banner:
-  alt: EXAMPLE
-  art: |-
-    EX
-    AMPLE
-descriptions:
-  projects: Fixture projects.
-  themes: Fixture palettes.
-blog:
-  enabled: false
+spec:
+  title: example.test
+  theme: nord
+  values:
+    banner:
+      alt: EXAMPLE
+      art: |-
+        EX
+        AMPLE
+    about: First line of the about page.
+    intro: example.test · a fixture

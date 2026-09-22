@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use crate::client::Client;
 use crate::content::{self, Target};
+use crate::discovery::Catalog;
 
 #[derive(Debug, clap::Args)]
 pub struct Args {
@@ -27,6 +28,7 @@ enum Command {
 pub fn run(
     out: &mut dyn Write,
     client: &Client,
+    catalog: &mut Catalog<'_>,
     api: &str,
     token: &dyn Fn() -> Result<Option<String>>,
     args: &Args,
@@ -34,7 +36,8 @@ pub fn run(
     match &args.command {
         None => {
             let status = client.post("/api/v1/sync", &json!({}))?;
-            writeln!(out, "synced: {}", content::summary(&status))?;
+            let resources = &catalog.discovery()?.resources;
+            writeln!(out, "synced: {}", content::summary(&status, resources))?;
             Ok(true)
         }
         Some(Command::Status { output }) => {

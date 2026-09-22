@@ -1,10 +1,11 @@
 //! What resource types the server has, cached like kubectl's discovery.
 //!
-//! The catalog and the schemas come from the server, so a kind added there
-//! works here without a new CLI. The cache lives per server under
-//! `$XDG_CACHE_HOME/hldr/` and is refreshed after six hours, when the server
-//! runs another version than the one that filled it, or at once when a type
-//! is not found in it.
+//! The catalog and the schemas come from the server, and page types from
+//! the content it serves, so a kind added in either works here without a new
+//! CLI. The cache lives per server under `$XDG_CACHE_HOME/hldr/` and is
+//! refreshed after six hours, when the server runs another version or serves
+//! another content revision than the ones that filled it, or at once when a
+//! type is not found in it.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -25,12 +26,17 @@ pub struct Discovery {
     /// and their schemas, so a cache from another version is stale.
     #[serde(default)]
     server_version: Option<String>,
+    /// Content the server served: page types come from content, so a cache
+    /// from another revision may lack a type or know an old one.
+    #[serde(default)]
+    content: Option<String>,
     pub resources: Vec<ApiResource>,
     pub schemas: Map<String, Value>,
 }
 
 impl Discovery {
     fn fetch(client: &Client, now: u64) -> Result<Self> {
+        let (server_version, content) = generation(client)?;
         let resources: List<ApiResource> =
             serde_json::from_value(client.get("/api/v1/api-resources")?)
                 .context("the server sent an invalid resource list")?;
@@ -39,7 +45,8 @@ impl Discovery {
         };
         Ok(Self {
             fetched_at: now,
-            server_version: server_version(client)?,
+            server_version,
+            content,
             resources: resources.items,
             schemas,
         })
@@ -83,7 +90,12 @@ impl<'a> Catalog<'a> {
                 .read_cache()
                 .filter(|d| now().saturating_sub(d.fetched_at) < TTL.as_secs())
             {
-                Some(cached) if cached.server_version == server_version(self.client)? => cached,
+                Some(cached)
+                    if (cached.server_version.clone(), cached.content.clone())
+                        == generation(self.client)? =>
+                {
+                    cached
+                }
                 _ => self.fetch()?,
             },
         };
@@ -140,11 +152,19 @@ impl<'a> Catalog<'a> {
     }
 }
 
-/// What `/healthz` reports, which never touches the server's database.
-fn server_version(client: &Client) -> Result<Option<String>> {
-    Ok(client.get("/healthz")?["version"]
+/// The server's version, from `/healthz`, and what identifies the content it
+/// serves: the revision, or, for content read from a directory, when it was
+/// last synced.
+fn generation(client: &Client) -> Result<(Option<String>, Option<String>)> {
+    let version = client.get("/healthz")?["version"]
         .as_str()
-        .map(str::to_owned))
+        .map(str::to_owned);
+    let sync = client.get("/api/v1/sync")?;
+    let content = sync["revision"]
+        .as_str()
+        .or(sync["synced_at"].as_str())
+        .map(str::to_owned);
+    Ok((version, content))
 }
 
 /// One cache directory per server, named after its URL.
@@ -177,7 +197,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "name": name, "singular": singular, "short_names": short, "kind": kind,
             "singleton": false, "verbs": ["get"],
-            "source": {"path": format!("{name}/{{name}}.md"), "format": "markdown"},
+            "source": {"path": format!("{name}/{{name}}.yaml")},
             "columns": [],
         }))
         .unwrap()
@@ -188,6 +208,7 @@ mod tests {
         let discovery = Discovery {
             fetched_at: 0,
             server_version: None,
+            content: None,
             resources: vec![resource("projects", "project", &["proj", "p"], "Project")],
             schemas: Map::new(),
         };
@@ -261,5 +282,27 @@ mod tests {
             .discovery()
             .unwrap();
         assert_eq!(stub.calls(), 2, "and cached for it");
+    }
+
+    #[test]
+    fn a_new_content_revision_invalidates_the_cache() {
+        let stub = Stub::default();
+        stub.set_revision(&"a".repeat(40));
+        let client = Client::new(stub.serve());
+        let cache = tempfile::tempdir().unwrap();
+
+        Catalog::new(&client, Some(cache.path()))
+            .discovery()
+            .unwrap();
+        Catalog::new(&client, Some(cache.path()))
+            .discovery()
+            .unwrap();
+        assert_eq!(stub.calls(), 1, "same revision, cached");
+
+        stub.set_revision(&"b".repeat(40));
+        Catalog::new(&client, Some(cache.path()))
+            .discovery()
+            .unwrap();
+        assert_eq!(stub.calls(), 2, "content may declare other page types");
     }
 }

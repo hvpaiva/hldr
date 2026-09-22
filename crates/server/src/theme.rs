@@ -122,6 +122,8 @@ mod tests {
             slug: "retro-82".to_owned(),
             title: "Retro 82".to_owned(),
             dark: true,
+            order: None,
+            hidden: false,
             colors: Palette {
                 bg: c("#05182e"),
                 fg: c("#f6dcac"),

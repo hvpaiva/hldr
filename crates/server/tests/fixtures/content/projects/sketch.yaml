@@ -1,0 +1,11 @@
+kind: Project
+metadata:
+  name: sketch
+  title: Sketch
+  tagline: Not published yet.
+  status: wip
+spec:
+  draft: true
+  frontmatter: open
+  content:
+    file: sketch.md

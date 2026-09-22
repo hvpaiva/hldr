@@ -1,174 +1,126 @@
 //! Wire format of the private API, shared by the server and the CLI.
 //!
-//! Every resource travels in the same envelope, so the CLI handles any kind
-//! the same way. Doc comments on the `spec` and `metadata` fields are what
-//! `hldr explain` prints: they are served through [`schemas`].
+//! Every resource travels in the same envelope as its file, `kind`,
+//! `metadata` and `spec`, plus the timestamps the server keeps and a
+//! `status`, so the CLI handles any kind the same way. Page types defined in
+//! content are resources too: discovery and schemas are built from their
+//! PageKinds, so `hldr` learns them without a release.
 
+use std::collections::BTreeMap;
+
+use indexmap::IndexMap;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 
-use crate::manifest::{Format, Kind};
-use crate::types::{AssetSpec, Palette, ProfileLinks, ProjectLinks, ProjectStatus};
+use crate::manifest::Kind;
+use crate::spec::{
+    CollectionSpec, FieldSpec, FieldType, NavSpec, PageKindSpec, PageSpec, ProfileSpec, SiteSpec,
+    ThemeSpec,
+};
 
 /// A resource as the API serves it.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Resource<M, S> {
-    /// Resource type, such as `Project`.
+    /// Resource type, such as `Theme` or `Project`.
     pub kind: String,
-    /// Identity and bookkeeping, set by the server.
+    /// The file's metadata, and the timestamps the server keeps.
     pub metadata: M,
-    /// Desired state: what the content file declares.
+    /// What the file declares under `spec`.
     pub spec: S,
     /// Derived state. Never accepted on write.
-    pub status: serde_json::Value,
+    pub status: Value,
 }
 
 /// A collection of resources of one kind.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct List<T> {
-    /// List type, such as `ProjectList`.
+    /// List type, such as `ThemeList`.
     pub kind: String,
     pub items: Vec<T>,
 }
 
-/// Project as the API serves it.
-pub type Project = Resource<ProjectMetadata, ProjectSpec>;
+/// Bookkeeping of a singleton, which has no name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct SingletonMetadata {
+    /// When the file last changed, ISO-8601 UTC. Set by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+/// Name and bookkeeping of a named resource.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct NamedMetadata {
+    /// Identifier: the file's name, which the file repeats here.
+    pub name: String,
+    /// When the file last changed, ISO-8601 UTC. Set by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+/// Site settings as the API serves them.
+pub type Site = Resource<SingletonMetadata, SiteSpec>;
 
 /// Profile as the API serves it.
-pub type Profile = Resource<ProfileMetadata, ProfileSpec>;
+pub type Profile = Resource<SingletonMetadata, ProfileSpec>;
 
-/// Site configuration as the API serves it.
-pub type Site = Resource<SiteMetadata, SiteSpec>;
+/// The file tree and statusline as the API serves them.
+pub type Nav = Resource<SingletonMetadata, NavSpec>;
+
+/// A page type as the API serves it.
+pub type PageKind = Resource<NamedMetadata, PageKindSpec>;
+
+/// A collection as the API serves it.
+pub type Collection = Resource<NamedMetadata, CollectionSpec>;
 
 /// Color scheme as the API serves it.
-pub type Theme = Resource<ThemeMetadata, ThemeSpec>;
+pub type Theme = Resource<NamedMetadata, ThemeSpec>;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ProjectMetadata {
-    /// Identifier, taken from the file name under `projects/`.
-    pub name: String,
-    /// When the project was first indexed, ISO-8601 UTC.
-    pub created_at: String,
-    /// When the project's file last changed, ISO-8601 UTC.
-    pub updated_at: String,
-}
+/// A page of any type as the API serves it: its metadata holds `name`,
+/// `title`, `description` and its type's fields, then the timestamps.
+pub type Page = Resource<Map<String, Value>, PageSpec>;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ProjectSpec {
-    /// Display name.
-    pub title: String,
-    /// One line shown under the title in lists and on the home page.
-    pub tagline: String,
-    pub status: ProjectStatus,
-    /// Kept out of the public site while true.
-    #[serde(default)]
-    pub draft: bool,
-    /// Position among the highlights on the home page. Lower numbers come
-    /// first; null leaves the project out of the highlights.
-    pub highlight: Option<i64>,
-    /// Free-form labels shown next to the project.
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub links: ProjectLinks,
-    /// GitHub repository as `owner/name`, the key for repository metrics.
-    pub github: Option<String>,
-    /// Images attached to the project.
-    #[serde(default)]
-    pub assets: Vec<AssetSpec>,
-    /// Markdown below the frontmatter.
-    #[serde(default)]
-    pub body: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ProfileMetadata {
-    /// When `profile.md` last changed, ISO-8601 UTC.
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ProfileSpec {
-    /// Full name.
-    pub name: String,
-    /// Short line under the name.
-    pub headline: String,
-    /// Paragraph that introduces the profile on the home page.
-    pub bio: String,
-    /// Public contact address.
-    pub email: Option<String>,
-    #[serde(default)]
-    pub links: ProfileLinks,
-    /// Markdown below the frontmatter: the about page.
-    #[serde(default)]
-    pub body: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SiteMetadata {
-    /// When a value in `site.yaml` last changed, ISO-8601 UTC.
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SiteSpec {
-    /// Site name, shown atop the file tree and after every page title.
-    pub title: String,
-    /// Theme a visitor sees before picking one; the name of a `Theme`.
-    pub theme: String,
-    /// ASCII art atop the home page; none when absent.
-    pub banner: Option<BannerSpec>,
-    pub descriptions: DescriptionsSpec,
-    pub blog: BlogSpec,
-}
-
-/// ASCII art and what it reads as.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BannerSpec {
-    /// The art, kept verbatim.
-    pub art: String,
-    /// What a screen reader announces instead of the art.
-    pub alt: String,
-}
-
-/// Lines that introduce the listing pages, also used as their meta description.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct DescriptionsSpec {
-    /// The projects index.
-    pub projects: String,
-    /// The color scheme picker.
-    pub themes: String,
-}
-
-/// The blog section of the site.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BlogSpec {
-    /// Whether the blog is listed and served.
-    pub enabled: bool,
-}
-
-/// What one pass of the indexer changed.
+/// What one pass of the indexer changed, by kind.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SyncReport {
-    /// `site.yaml` changed a value.
-    pub site_updated: bool,
-    /// `profile.md` changed.
-    pub profile_updated: bool,
-    /// Projects created or rewritten.
-    pub projects_upserted: u32,
-    /// Projects whose files did not change.
-    pub projects_skipped: u32,
-    /// Projects whose files are gone.
-    pub projects_deleted: u32,
-    /// Themes created or rewritten.
-    pub themes_upserted: u32,
-    /// Themes whose files did not change.
-    pub themes_skipped: u32,
-    /// Themes whose files are gone.
-    pub themes_deleted: u32,
+    /// Counts by the kind files declare, such as `Theme` or `Project`.
+    pub kinds: BTreeMap<String, KindReport>,
+}
+
+/// What one pass changed for one kind.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct KindReport {
+    /// Resources created or rewritten.
+    #[serde(default)]
+    pub upserted: u32,
+    /// Resources whose files did not change.
+    #[serde(default)]
+    pub skipped: u32,
+    /// Resources whose files are gone.
+    #[serde(default)]
+    pub deleted: u32,
+}
+
+impl SyncReport {
+    /// Counts a resource the pass wrote (`true`) or left as it was.
+    pub fn count(&mut self, kind: &str, written: bool) {
+        let entry = self.kinds.entry(kind.to_owned()).or_default();
+        if written {
+            entry.upserted += 1;
+        } else {
+            entry.skipped += 1;
+        }
+    }
+
+    pub fn deleted(&mut self, kind: &str, count: u32) {
+        if count > 0 {
+            self.kinds.entry(kind.to_owned()).or_default().deleted += count;
+        }
+    }
+
+    pub fn get(&self, kind: &str) -> KindReport {
+        self.kinds.get(kind).copied().unwrap_or_default()
+    }
 }
 
 /// State of the content sync, as `hldr sync status` shows it.
@@ -233,24 +185,6 @@ pub struct SyncRequest {
     pub revision: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ThemeMetadata {
-    /// Identifier, taken from the file name under `themes/`; the value the
-    /// theme cookie and `/theme/{name}` carry.
-    pub name: String,
-    /// When the theme's file last changed, ISO-8601 UTC.
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ThemeSpec {
-    /// Display name in the picker.
-    pub title: String,
-    /// Whether the palette is dark; sets the page's `color-scheme`.
-    pub dark: bool,
-    pub colors: Palette,
-}
-
 /// Error body, RFC 9457 (`application/problem+json`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Problem {
@@ -264,7 +198,7 @@ pub struct Problem {
 /// A resource type the server exposes, as `hldr api-resources` lists it.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ApiResource {
-    /// Plural name used in paths, such as `projects`.
+    /// Plural name used in paths, such as `themes`.
     pub name: String,
     /// Singular name, used by `hldr explain`.
     pub singular: String,
@@ -281,12 +215,12 @@ pub struct ApiResource {
     pub columns: Vec<Column>,
 }
 
-/// The file that declares a resource.
+/// The manifest that declares a resource. A page's markdown sits beside it,
+/// under the name its `spec.content.file` gives.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Source {
     /// Path under the content root; `{name}` stands for the resource name.
     pub path: String,
-    pub format: Format,
 }
 
 /// A table column, in the style of kubectl's printer columns.
@@ -294,7 +228,7 @@ pub struct Source {
 pub struct Column {
     /// Header text.
     pub name: String,
-    /// Field shown, as a kubectl-style JSONPath such as `.spec.status`.
+    /// Field shown, as a kubectl-style JSONPath such as `.spec.title`.
     pub json_path: String,
     /// Shown only with `-o wide`.
     pub wide: bool,
@@ -303,232 +237,487 @@ pub struct Column {
 const READ_VERBS: &[&str] = &["get", "describe", "explain"];
 const WRITE_VERBS: &[&str] = &["edit", "apply", "diff", "patch"];
 
-/// Resource types the server exposes, in display order.
-pub fn resources() -> List<ApiResource> {
+/// A page type as discovery sees it: its spec and the collection that is its
+/// home.
+pub struct PageType<'a> {
+    pub collection: &'a str,
+    pub spec: &'a PageKindSpec,
+}
+
+/// Resource types the server exposes, in display order: the built-in kinds,
+/// then one per page type.
+pub fn resources(types: &[PageType<'_>]) -> List<ApiResource> {
+    let updated = ("UPDATED", ".metadata.updated_at", true);
+    let mut items = vec![
+        builtin(
+            Kind::Site,
+            "site",
+            &[],
+            &[
+                ("TITLE", ".spec.title", false),
+                ("THEME", ".spec.theme", false),
+                updated,
+            ],
+        ),
+        builtin(
+            Kind::Profile,
+            "profile",
+            &[],
+            &[
+                ("NAME", ".spec.name", false),
+                ("HEADLINE", ".spec.headline", false),
+                ("EMAIL", ".spec.email", true),
+                updated,
+            ],
+        ),
+        builtin(
+            Kind::Nav,
+            "nav",
+            &[],
+            &[("COUNT", ".spec.statusline.count", false), updated],
+        ),
+        builtin(
+            Kind::PageKind,
+            "pagekinds",
+            &["pk"],
+            &[
+                ("NAME", ".metadata.name", false),
+                ("KIND", ".spec.names.kind", false),
+                ("PLURAL", ".spec.names.plural", false),
+                ("SUMMARY", ".spec.summary", true),
+                updated,
+            ],
+        ),
+        builtin(
+            Kind::Collection,
+            "collections",
+            &["col"],
+            &[
+                ("NAME", ".metadata.name", false),
+                ("KIND", ".spec.kind", false),
+                ("ENABLED", ".spec.enabled", false),
+                ("ORDER", ".spec.order", true),
+                updated,
+            ],
+        ),
+        builtin(
+            Kind::Page,
+            "pages",
+            &[],
+            &[
+                ("NAME", ".metadata.name", false),
+                ("TITLE", ".metadata.title", false),
+                ("DRAFT", ".spec.draft", false),
+                ("BUFFER", ".spec.buffer", true),
+                updated,
+            ],
+        ),
+        builtin(
+            Kind::Theme,
+            "themes",
+            &["th"],
+            &[
+                ("NAME", ".metadata.name", false),
+                ("TITLE", ".spec.title", false),
+                ("DARK", ".spec.dark", false),
+                ("HIDDEN", ".spec.hidden", false),
+                ("ORDER", ".spec.order", true),
+                ("BG", ".spec.colors.bg", true),
+                ("ACCENT", ".spec.colors.accent", true),
+                updated,
+            ],
+        ),
+    ];
+    let mut types: Vec<&PageType<'_>> = types.iter().collect();
+    types.sort_by(|a, b| a.spec.names.plural.cmp(&b.spec.names.plural));
+    items.extend(types.into_iter().map(page_type));
     List {
         kind: "APIResourceList".to_owned(),
-        items: vec![
-            entry(
-                Kind::Project,
-                "projects",
-                &["proj", "p"],
-                &[
-                    ("NAME", ".metadata.name", false),
-                    ("STATUS", ".spec.status", false),
-                    ("HIGHLIGHT", ".spec.highlight", false),
-                    ("DRAFT", ".spec.draft", false),
-                    ("TAGLINE", ".spec.tagline", true),
-                    ("TAGS", ".spec.tags", true),
-                    ("UPDATED", ".metadata.updated_at", true),
-                ],
-            ),
-            entry(
-                Kind::Profile,
-                "profile",
-                &[],
-                &[
-                    ("NAME", ".spec.name", false),
-                    ("HEADLINE", ".spec.headline", false),
-                    ("EMAIL", ".spec.email", true),
-                    ("UPDATED", ".metadata.updated_at", true),
-                ],
-            ),
-            entry(
-                Kind::Site,
-                "site",
-                &[],
-                &[
-                    ("TITLE", ".spec.title", false),
-                    ("THEME", ".spec.theme", false),
-                    ("BLOG", ".spec.blog.enabled", false),
-                    ("UPDATED", ".metadata.updated_at", true),
-                ],
-            ),
-            entry(
-                Kind::Theme,
-                "themes",
-                &["th"],
-                &[
-                    ("NAME", ".metadata.name", false),
-                    ("TITLE", ".spec.title", false),
-                    ("DARK", ".spec.dark", false),
-                    ("BG", ".spec.colors.bg", true),
-                    ("ACCENT", ".spec.colors.accent", true),
-                    ("UPDATED", ".metadata.updated_at", true),
-                ],
-            ),
-        ],
+        items,
     }
 }
 
-fn entry(
+fn verbs(singleton: bool) -> Vec<String> {
+    let mut verbs: Vec<String> = READ_VERBS
+        .iter()
+        .chain(WRITE_VERBS)
+        .map(|&verb| verb.to_owned())
+        .collect();
+    if !singleton {
+        verbs.push("delete".to_owned());
+    }
+    verbs
+}
+
+fn columns(columns: &[(&str, &str, bool)]) -> Vec<Column> {
+    columns
+        .iter()
+        .map(|&(name, json_path, wide)| Column {
+            name: name.to_owned(),
+            json_path: json_path.to_owned(),
+            wide,
+        })
+        .collect()
+}
+
+fn builtin(
     kind: Kind,
     name: &str,
     short_names: &[&str],
-    columns: &[(&str, &str, bool)],
+    printed: &[(&str, &str, bool)],
 ) -> ApiResource {
-    let owned = |items: &[&str]| items.iter().map(|&s| s.to_owned()).collect::<Vec<_>>();
-    let mut verbs = owned(READ_VERBS);
-    verbs.extend(owned(WRITE_VERBS));
-    if !kind.is_singleton() {
-        verbs.push("delete".to_owned());
-    }
     ApiResource {
         name: name.to_owned(),
         singular: kind.as_str().to_lowercase(),
-        short_names: owned(short_names),
+        short_names: short_names.iter().map(|&s| s.to_owned()).collect(),
         kind: kind.as_str().to_owned(),
         singleton: kind.is_singleton(),
-        verbs,
+        verbs: verbs(kind.is_singleton()),
         source: Source {
             path: kind.path_template().to_owned(),
-            format: kind.format(),
         },
-        columns: columns
-            .iter()
-            .map(|&(name, json_path, wide)| Column {
-                name: name.to_owned(),
-                json_path: json_path.to_owned(),
-                wide,
-            })
-            .collect(),
+        columns: columns(printed),
     }
 }
 
-/// JSON Schema of every resource kind, keyed by kind.
-pub fn schemas() -> serde_json::Map<String, serde_json::Value> {
-    let mut out = serde_json::Map::new();
-    out.insert("Project".to_owned(), titled::<Project>("Project"));
-    out.insert("Profile".to_owned(), titled::<Profile>("Profile"));
+/// A page type's resource. Its columns come from its fields: short scalars
+/// in the table, text and lists with `-o wide`.
+fn page_type(page_type: &PageType<'_>) -> ApiResource {
+    let names = &page_type.spec.names;
+    let mut printed = vec![Column {
+        name: "NAME".to_owned(),
+        json_path: ".metadata.name".to_owned(),
+        wide: false,
+    }];
+    let field = |name: &String, wide| Column {
+        name: name.to_uppercase(),
+        json_path: format!(".metadata.{name}"),
+        wide,
+    };
+    for (name, spec) in &page_type.spec.fields {
+        if matches!(
+            spec.kind,
+            FieldType::Enum | FieldType::Int | FieldType::Bool
+        ) {
+            printed.push(field(name, false));
+        }
+    }
+    printed.push(Column {
+        name: "DRAFT".to_owned(),
+        json_path: ".spec.draft".to_owned(),
+        wide: false,
+    });
+    printed.push(Column {
+        name: "TITLE".to_owned(),
+        json_path: ".metadata.title".to_owned(),
+        wide: true,
+    });
+    for (name, spec) in &page_type.spec.fields {
+        if matches!(
+            spec.kind,
+            FieldType::String | FieldType::Url | FieldType::List
+        ) {
+            printed.push(field(name, true));
+        }
+    }
+    printed.push(Column {
+        name: "UPDATED".to_owned(),
+        json_path: ".metadata.updated_at".to_owned(),
+        wide: true,
+    });
+    ApiResource {
+        name: names.plural.clone(),
+        singular: names.singular.clone(),
+        short_names: names.short_names.clone(),
+        kind: names.kind.clone(),
+        singleton: false,
+        verbs: verbs(false),
+        source: Source {
+            path: format!("{}/{{name}}.yaml", page_type.collection),
+        },
+        columns: printed,
+    }
+}
+
+/// JSON Schema of every resource kind, keyed by kind: the built-in kinds
+/// from their types, each page type from its fields.
+pub fn schemas(types: &[PageType<'_>]) -> Map<String, Value> {
+    let mut out = Map::new();
     out.insert("Site".to_owned(), titled::<Site>("Site"));
+    out.insert("Profile".to_owned(), titled::<Profile>("Profile"));
+    out.insert("Nav".to_owned(), titled::<Nav>("Nav"));
+    out.insert("PageKind".to_owned(), titled::<PageKind>("PageKind"));
+    out.insert("Collection".to_owned(), titled::<Collection>("Collection"));
     out.insert("Theme".to_owned(), titled::<Theme>("Theme"));
+    out.insert(
+        "Page".to_owned(),
+        page_schema("Page", &IndexMap::new(), "A page outside any collection."),
+    );
+    for page_type in types {
+        let names = &page_type.spec.names;
+        let about = format!(
+            "A page of the {} type, which kinds/ declares; its pages live in {}/.",
+            names.singular, page_type.collection
+        );
+        out.insert(
+            names.kind.clone(),
+            page_schema(&names.kind, &page_type.spec.fields, &about),
+        );
+    }
     out
 }
 
-fn titled<T: JsonSchema>(title: &str) -> serde_json::Value {
+fn titled<T: JsonSchema>(title: &str) -> Value {
     let mut schema = schema_for!(T);
     schema.insert("title".to_owned(), title.into());
     schema.to_value()
+}
+
+/// A page resource's schema, in the shape schemars gives the built-in
+/// kinds: `$ref`s into `$defs`, enums as `oneOf` of `const`s.
+fn page_schema(kind: &str, fields: &IndexMap<String, FieldSpec>, about: &str) -> Value {
+    let spec = schema_for!(PageSpec).to_value();
+    let mut defs = spec
+        .get("$defs")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut page_spec = spec;
+    if let Some(object) = page_spec.as_object_mut() {
+        object.remove("$defs");
+        object.remove("$schema");
+        object.remove("title");
+    }
+    defs.insert("PageSpec".to_owned(), page_spec);
+
+    let string = |description: &str| json!({ "type": "string", "description": description });
+    let mut properties = Map::new();
+    properties.insert(
+        "name".to_owned(),
+        string("Identifier: the file's name, which the file repeats here."),
+    );
+    properties.insert(
+        "title".to_owned(),
+        string("Display name, also the HTML title. Templates allowed."),
+    );
+    properties.insert(
+        "description".to_owned(),
+        string("Meta description of the page. Templates allowed."),
+    );
+    let mut required = vec![json!("name"), json!("title")];
+    for (name, field) in fields {
+        properties.insert(name.clone(), field_schema(field));
+        if field.required {
+            required.push(json!(name));
+        }
+    }
+    properties.insert(
+        "created_at".to_owned(),
+        string("When the page was first indexed, ISO-8601 UTC. Set by the server."),
+    );
+    properties.insert(
+        "updated_at".to_owned(),
+        string(
+            "When the page's manifest or content last changed, ISO-8601 UTC. Set by the server.",
+        ),
+    );
+    let metadata = format!("{kind}Metadata");
+    defs.insert(
+        metadata.clone(),
+        json!({
+            "type": "object",
+            "description": "What the page declares about itself, which its frontmatter shows.",
+            "properties": properties,
+            "required": required,
+        }),
+    );
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": kind,
+        "description": about,
+        "type": "object",
+        "properties": {
+            "kind": { "type": "string", "description": "Resource type, such as `Theme` or `Project`." },
+            "metadata": { "$ref": format!("#/$defs/{metadata}"), "description": "The file's metadata, and the timestamps the server keeps." },
+            "spec": { "$ref": "#/$defs/PageSpec", "description": "How the page is built, the same for every page type." },
+            "status": { "description": "Derived state. Never accepted on write." },
+        },
+        "required": ["kind", "metadata", "spec", "status"],
+        "$defs": defs,
+    })
+}
+
+fn field_schema(field: &FieldSpec) -> Value {
+    let mut schema = match field.kind {
+        FieldType::String => json!({ "type": "string" }),
+        FieldType::Url => json!({ "type": "string", "format": "uri" }),
+        FieldType::Int => json!({ "type": "integer" }),
+        FieldType::Bool => json!({ "type": "boolean" }),
+        FieldType::List => json!({ "type": "array", "items": { "type": "string" } }),
+        FieldType::Enum => {
+            let variants: Vec<Value> = field
+                .values
+                .iter()
+                .map(|value| {
+                    let mut variant = json!({ "const": value, "type": "string" });
+                    if field.ok.contains(value) {
+                        variant["description"] =
+                            json!("Drawn as good: in the ok color, and as the tree badge.");
+                    }
+                    variant
+                })
+                .collect();
+            json!({ "oneOf": variants })
+        }
+        FieldType::Links => {
+            let keys: Map<String, Value> = field
+                .keys
+                .iter()
+                .map(|key| {
+                    (
+                        key.clone(),
+                        json!({ "type": "string", "description": "A URL; linked when it is safe." }),
+                    )
+                })
+                .collect();
+            json!({ "type": "object", "properties": keys, "additionalProperties": false })
+        }
+    };
+    if let Some(description) = &field.description {
+        schema["description"] = json!(description);
+    }
+    schema
 }
 
 #[cfg(feature = "store")]
 mod from_store {
     use super::*;
 
-    fn empty_status() -> serde_json::Value {
-        serde_json::Value::Object(serde_json::Map::new())
+    fn empty_status() -> Value {
+        Value::Object(Map::new())
     }
 
-    impl From<&crate::Project> for Project {
-        fn from(item: &crate::Project) -> Self {
+    fn singleton<S>(kind: Kind, spec: S, updated_at: &str) -> Resource<SingletonMetadata, S> {
+        Resource {
+            kind: kind.as_str().to_owned(),
+            metadata: SingletonMetadata {
+                updated_at: Some(updated_at.to_owned()),
+            },
+            spec,
+            status: empty_status(),
+        }
+    }
+
+    fn named<S>(kind: Kind, name: &str, spec: S, updated_at: &str) -> Resource<NamedMetadata, S> {
+        Resource {
+            kind: kind.as_str().to_owned(),
+            metadata: NamedMetadata {
+                name: name.to_owned(),
+                updated_at: Some(updated_at.to_owned()),
+            },
+            spec,
+            status: empty_status(),
+        }
+    }
+
+    impl From<&crate::store::Site> for Site {
+        fn from(item: &crate::store::Site) -> Self {
+            singleton(Kind::Site, item.spec.clone(), &item.updated_at)
+        }
+    }
+
+    impl From<&crate::store::Profile> for Profile {
+        fn from(item: &crate::store::Profile) -> Self {
+            singleton(Kind::Profile, item.spec.clone(), &item.updated_at)
+        }
+    }
+
+    impl From<&crate::store::Nav> for Nav {
+        fn from(item: &crate::store::Nav) -> Self {
+            singleton(Kind::Nav, item.spec.clone(), &item.updated_at)
+        }
+    }
+
+    impl From<&crate::store::PageKind> for PageKind {
+        fn from(item: &crate::store::PageKind) -> Self {
+            named(
+                Kind::PageKind,
+                &item.name,
+                item.spec.clone(),
+                &item.updated_at,
+            )
+        }
+    }
+
+    impl From<&crate::store::Collection> for Collection {
+        fn from(item: &crate::store::Collection) -> Self {
+            named(
+                Kind::Collection,
+                &item.name,
+                item.spec.clone(),
+                &item.updated_at,
+            )
+        }
+    }
+
+    impl From<&crate::store::Theme> for Theme {
+        fn from(item: &crate::store::Theme) -> Self {
+            let spec = ThemeSpec {
+                title: item.title.clone(),
+                dark: item.dark,
+                order: item.order,
+                hidden: item.hidden,
+                colors: item.colors.clone(),
+            };
+            named(Kind::Theme, &item.slug, spec, &item.updated_at)
+        }
+    }
+
+    impl From<&crate::store::Page> for Page {
+        fn from(item: &crate::store::Page) -> Self {
+            let mut metadata = Map::new();
+            metadata.insert("name".to_owned(), Value::String(item.page.name.clone()));
+            metadata.extend(item.page.metadata.clone());
+            metadata.insert(
+                "created_at".to_owned(),
+                Value::String(item.created_at.clone()),
+            );
+            metadata.insert(
+                "updated_at".to_owned(),
+                Value::String(item.updated_at.clone()),
+            );
             Resource {
-                kind: Kind::Project.as_str().to_owned(),
-                metadata: ProjectMetadata {
-                    name: item.slug.clone(),
-                    created_at: item.created_at.clone(),
-                    updated_at: item.updated_at.clone(),
-                },
-                spec: ProjectSpec {
-                    title: item.title.clone(),
-                    tagline: item.tagline.clone(),
-                    status: item.status,
-                    draft: item.draft,
-                    highlight: item.highlight,
-                    tags: item.tags.clone(),
-                    links: item.links.clone(),
-                    github: item.github_repo.clone(),
-                    assets: item.assets.clone(),
-                    body: item.body_source.clone(),
-                },
+                kind: item.page.kind.clone(),
+                metadata,
+                spec: item.page.spec.clone(),
                 status: empty_status(),
             }
         }
     }
 
-    impl From<&crate::Profile> for Profile {
-        fn from(item: &crate::Profile) -> Self {
-            Resource {
-                kind: Kind::Profile.as_str().to_owned(),
-                metadata: ProfileMetadata {
-                    updated_at: item.updated_at.clone(),
-                },
-                spec: ProfileSpec {
-                    name: item.name.clone(),
-                    headline: item.headline.clone(),
-                    bio: item.bio.clone(),
-                    email: item.email.clone(),
-                    links: item.links.clone(),
-                    body: item.about_source.clone(),
-                },
-                status: empty_status(),
-            }
-        }
-    }
-
-    impl From<&crate::SiteConfig> for Site {
-        fn from(item: &crate::SiteConfig) -> Self {
-            Resource {
-                kind: Kind::Site.as_str().to_owned(),
-                metadata: SiteMetadata {
-                    updated_at: item.updated_at.clone(),
-                },
-                spec: SiteSpec {
-                    title: item.title.clone(),
-                    theme: item.theme.clone(),
-                    banner: item.banner.clone(),
-                    descriptions: item.descriptions.clone(),
-                    blog: BlogSpec {
-                        enabled: item.blog_enabled,
-                    },
-                },
-                status: empty_status(),
-            }
-        }
-    }
-
-    impl From<&crate::Theme> for Theme {
-        fn from(item: &crate::Theme) -> Self {
-            Resource {
-                kind: Kind::Theme.as_str().to_owned(),
-                metadata: ThemeMetadata {
-                    name: item.slug.clone(),
-                    updated_at: item.updated_at.clone(),
-                },
-                spec: ThemeSpec {
-                    title: item.title.clone(),
-                    dark: item.dark,
-                    colors: item.colors.clone(),
-                },
-                status: empty_status(),
-            }
-        }
-    }
-
-    /// Themes as a `ThemeList`.
-    pub fn theme_list(items: &[crate::Theme]) -> List<Theme> {
+    /// Resources as a `<Kind>List`.
+    pub fn list<'a, T: 'a, R: From<&'a T>>(
+        kind: &str,
+        items: impl IntoIterator<Item = &'a T>,
+    ) -> List<R> {
         List {
-            kind: "ThemeList".to_owned(),
-            items: items.iter().map(Theme::from).collect(),
-        }
-    }
-
-    /// Projects as a `ProjectList`.
-    pub fn project_list(items: &[crate::Project]) -> List<Project> {
-        List {
-            kind: "ProjectList".to_owned(),
-            items: items.iter().map(Project::from).collect(),
+            kind: format!("{kind}List"),
+            items: items.into_iter().map(R::from).collect(),
         }
     }
 }
 
 #[cfg(feature = "store")]
-pub use from_store::{project_list, theme_list};
+pub use from_store::list;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::{self, Manifest, Registry};
+    use crate::testing;
+    use std::path::Path;
 
-    fn field<'a>(schema: &'a serde_json::Value, path: &[&str]) -> &'a serde_json::Value {
+    fn field<'a>(schema: &'a Value, path: &[&str]) -> &'a Value {
         let defs = &schema["$defs"];
         let mut node = schema;
         for name in path {
@@ -541,43 +730,78 @@ mod tests {
         node
     }
 
+    fn project_kind() -> PageKindSpec {
+        match manifest::parse(
+            Path::new("kinds/project.yaml"),
+            testing::PROJECT_KIND.as_bytes(),
+            &Registry::default(),
+        )
+        .unwrap()
+        {
+            Manifest::PageKind { spec, .. } => spec,
+            _ => unreachable!(),
+        }
+    }
+
+    fn types(spec: &PageKindSpec) -> Vec<PageType<'_>> {
+        vec![PageType {
+            collection: "projects",
+            spec,
+        }]
+    }
+
     #[test]
     fn field_docs_reach_the_schema() {
-        let schemas = schemas();
+        let kind = project_kind();
+        let schemas = schemas(&types(&kind));
+        let theme = &schemas["Theme"];
+        assert_eq!(theme["title"], "Theme");
+        let hidden = field(theme, &["spec", "hidden"]);
+        assert!(
+            hidden["description"]
+                .as_str()
+                .unwrap()
+                .starts_with("Left out of the picker")
+        );
+
+        let repo = field(&schemas["Profile"], &["spec", "links", "github"]);
+        assert_eq!(repo["description"], "GitHub profile URL.");
+
         let project = &schemas["Project"];
         assert_eq!(project["title"], "Project");
-
-        let highlight = field(project, &["spec", "highlight"]);
-        let doc = highlight["description"].as_str().unwrap();
-        assert!(doc.starts_with("Position among the highlights"), "{doc}");
-
-        let repo = field(project, &["spec", "links", "repo"]);
-        assert_eq!(repo["description"], "Source repository URL.");
-
-        let status = field(project, &["spec", "status"]);
-        assert_eq!(status["description"], "Where a project stands.");
-
-        let blog = field(&schemas["Site"], &["spec", "blog", "enabled"]);
-        assert_eq!(
-            blog["description"],
-            "Whether the blog is listed and served."
+        let status = field(project, &["metadata", "status"]);
+        assert_eq!(status["oneOf"][0]["const"], "active");
+        assert!(status["oneOf"][0]["description"].is_string());
+        let frontmatter = field(project, &["spec", "frontmatter"]);
+        assert!(
+            frontmatter["description"]
+                .as_str()
+                .unwrap()
+                .contains("frontmatter")
         );
+        let required = field(project, &["metadata"])["required"].clone();
+        assert_eq!(required, json!(["name", "title", "tagline", "status"]));
     }
 
     #[test]
     fn every_resource_has_a_schema() {
-        let schemas = schemas();
-        let catalog = resources();
+        let kind = project_kind();
+        let schemas = schemas(&types(&kind));
+        let catalog = resources(&types(&kind));
         assert_eq!(catalog.items.len(), schemas.len());
         for resource in &catalog.items {
             assert!(schemas.contains_key(&resource.kind), "{}", resource.kind);
         }
+        let projects = catalog.items.iter().find(|r| r.name == "projects").unwrap();
+        assert_eq!(projects.source.path, "projects/{name}.yaml");
+        assert_eq!(projects.short_names, ["p"]);
     }
 
     #[test]
     fn every_column_names_a_schema_field() {
-        let schemas = schemas();
-        for resource in resources().items {
+        let kind = project_kind();
+        let schemas = schemas(&types(&kind));
+        for resource in resources(&types(&kind)).items {
             let schema = &schemas[&resource.kind];
             for column in &resource.columns {
                 let path: Vec<&str> = column
@@ -597,39 +821,147 @@ mod tests {
 
     #[test]
     fn only_named_kinds_can_be_deleted() {
-        for resource in resources().items {
+        let kind = project_kind();
+        for resource in resources(&types(&kind)).items {
             let deletable = resource.verbs.iter().any(|verb| verb == "delete");
             assert_eq!(deletable, !resource.singleton, "{}", resource.kind);
         }
     }
 
+    /// Keys a YAML mapping holds at `indent` under the line `under:`, or at
+    /// the top when `under` is empty.
+    fn keys(text: &str, under: &str) -> Vec<String> {
+        let mut inside = under.is_empty();
+        let indent = if under.is_empty() { "" } else { "  " };
+        let mut out = Vec::new();
+        for line in text.lines() {
+            if !under.is_empty() && !line.starts_with(' ') {
+                inside = line == format!("{under}:");
+                continue;
+            }
+            if !inside {
+                continue;
+            }
+            let Some(rest) = line.strip_prefix(indent) else {
+                continue;
+            };
+            if rest.starts_with([' ', '-']) {
+                continue;
+            }
+            if let Some((key, _)) = rest.split_once(':') {
+                out.push(key.to_owned());
+            }
+        }
+        out.sort();
+        out
+    }
+
+    fn required(schema: &Value, part: &str) -> Vec<String> {
+        let node = field(schema, &[part]);
+        let mut names: Vec<String> = node["required"]
+            .as_array()
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|n| n.as_str().unwrap().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// The smallest file of each kind: its required fields and nothing else.
+    const MINIMAL: [(&str, &str); 8] = [
+        (
+            "site.yaml",
+            "kind: Site\nspec:\n  title: T\n  theme: nord\n",
+        ),
+        (
+            "profile.yaml",
+            "kind: Profile\nspec:\n  name: N\n  headline: H\n  bio: B\n",
+        ),
+        ("nav.yaml", "kind: Nav\nspec:\n  sections: []\n"),
+        ("themes/nord.yaml", testing::THEME),
+        (
+            "kinds/post.yaml",
+            "kind: PageKind\nmetadata:\n  name: post\nspec:\n  names: {kind: Post, singular: post, plural: posts}\n",
+        ),
+        (
+            "collections/blog.yaml",
+            "kind: Collection\nmetadata:\n  name: blog\nspec:\n  kind: Post\n",
+        ),
+        (
+            "pages/about.yaml",
+            "kind: Page\nmetadata:\n  name: about\n  title: A\nspec:\n  content:\n    inline: x\n",
+        ),
+        (
+            "projects/atlas.yaml",
+            "kind: Project\nmetadata:\n  name: atlas\n  title: T\n  tagline: L\n  status: wip\nspec:\n  content:\n    inline: x\n",
+        ),
+    ];
+
     #[test]
-    fn resource_round_trips() {
-        let project = Project {
-            kind: "Project".to_owned(),
-            metadata: ProjectMetadata {
-                name: "atlas".to_owned(),
-                created_at: "2026-01-01T00:00:00Z".to_owned(),
-                updated_at: "2026-01-02T00:00:00Z".to_owned(),
-            },
-            spec: ProjectSpec {
-                title: "Atlas".to_owned(),
-                tagline: "ADCS".to_owned(),
-                status: ProjectStatus::Wip,
-                draft: true,
-                highlight: None,
-                tags: vec!["rust".to_owned()],
-                links: ProjectLinks::default(),
-                github: None,
-                assets: Vec::new(),
-                body: "Body.\n".to_owned(),
-            },
-            status: serde_json::json!({}),
+    fn the_schema_requires_what_the_file_requires() {
+        let kind = project_kind();
+        let schemas = schemas(&types(&kind));
+        let collection = match manifest::parse(
+            Path::new("collections/projects.yaml"),
+            testing::PROJECTS.as_bytes(),
+            &Registry::default(),
+        )
+        .unwrap()
+        {
+            Manifest::Collection { spec, .. } => spec,
+            _ => unreachable!(),
         };
-        let json = serde_json::to_string(&project).unwrap();
-        let back: Project = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.spec.status, ProjectStatus::Wip);
-        assert!(back.spec.draft);
-        assert_eq!(back.metadata.name, "atlas");
+        let registry = Registry::new([kind.clone()], [("projects".to_owned(), collection)]);
+        for (path, text) in MINIMAL {
+            let manifest = manifest::parse(Path::new(path), text.as_bytes(), &registry)
+                .unwrap_or_else(|err| panic!("{path}: {err}"));
+            let schema = &schemas[manifest.kind()];
+            let mut expected = required(schema, "spec");
+            if matches!(manifest, Manifest::Page(_)) {
+                // Required unless the style is colorscheme, which a schema
+                // cannot say; the parser enforces it.
+                expected.push("content".to_owned());
+            }
+            assert_eq!(keys(text, "spec"), expected, "{path}: spec");
+            if matches!(manifest, Manifest::Page(_)) {
+                assert_eq!(
+                    keys(text, "metadata"),
+                    required(schema, "metadata"),
+                    "{path}: metadata"
+                );
+            }
+            for key in keys(text, "spec") {
+                let missing = text.replace(&format!("\n  {key}:"), "\n  missing_on_purpose:");
+                assert!(
+                    manifest::parse(Path::new(path), missing.as_bytes(), &registry).is_err(),
+                    "{path} parses without spec.{key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reports_count_by_kind() {
+        let mut report = SyncReport::default();
+        report.count("Theme", true);
+        report.count("Theme", false);
+        report.deleted("Project", 2);
+        report.deleted("Page", 0);
+        assert_eq!(
+            report.get("Theme"),
+            KindReport {
+                upserted: 1,
+                skipped: 1,
+                deleted: 0
+            }
+        );
+        assert_eq!(report.get("Project").deleted, 2);
+        assert!(!report.kinds.contains_key("Page"));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["kinds"]["Theme"]["upserted"], 1);
     }
 }

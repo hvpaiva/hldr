@@ -1,0 +1,10 @@
+kind: Page
+metadata:
+  name: not-found
+  title: "404"
+spec:
+  content:
+    inline: |
+      {{ link / README.md }}      start here
+      {{ link /projects projects/ }}      everything indexed
+      {{ link /help help.txt }}       keys and commands

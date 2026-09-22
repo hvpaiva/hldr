@@ -15,12 +15,20 @@
   const here = document.body.dataset.path;
   const version = ($(".status .ver")?.textContent.match(/hldr ([\w.-]+)/) || [])[1] || "";
   const mobile = () => matchMedia("(max-width: 760px)").matches;
-  const BANNER = "ooooo ooooo ooooo\n 888   888   888\n 888   888   888\n 888ooo888   888\n 888   888   888     o\no888o o888o o888oooo88\n\nooooooooo  oooooooooo\n 888    88o 888    888\n 888    888 888oooo88\n 888    888 888  88o\no888ooo88  o888o  88o8";
+  // the intro's banner and the line under its version are site values
+  let siteData;
+  const site = () => (siteData ??= fetch("/intro.json").then((r) => (r.ok ? r.json() : {})).catch(() => ({})));
 
-  // files: everything the tree links to, plus the pages outside it
-  const FILES = new Map([["README.md", "/"], ["[colorscheme]", "/theme"], ["help.txt", "/help"]]);
+  // files: what the tree links to, in the order :e completes them: the
+  // index, the buffers of the commands, the files, then the folders
+  const BUFFERS = { colorscheme: "[colorscheme]", help: "help.txt" };
+  const FILES = new Map();
+  const home = $('a[data-file][href="/"]', tree);
+  if (home) FILES.set(home.dataset.file, "/");
+  $$("a[data-cmd]", tree).forEach((a) => { if (BUFFERS[a.dataset.cmd]) FILES.set(BUFFERS[a.dataset.cmd], a.getAttribute("href")); });
   $$("a[data-file]", tree).forEach((a) => FILES.set(a.dataset.file, a.getAttribute("href")));
-  FILES.set("projects/", "/projects");
+  const DIRS = $$(".dir > summary a", tree).map((a) => a.getAttribute("href"));
+  $$(".dir > summary a", tree).forEach((a) => FILES.set(a.textContent, a.getAttribute("href")));
   const paths = () => [...FILES.keys()].filter((p) => p !== "[colorscheme]");
   const byPath = (arg) => {
     const a = arg.replace(/^\.?\//, "").toLowerCase();
@@ -343,7 +351,7 @@
     if (is("Neotree", "NvimTreeToggle", "NERDTreeToggle", "Lex", "Lexplore", "Ex", "Explore")) { toggleTree(); return; }
     if (is("Telescope", "FzfLua", "Files", "Pick")) { finder(); return; }
     if (is("version", "ve")) { more(`HLDR v${version} (hvpaiva.dev)\nBuild type: Release · maud + axum + sqlite (WAL)\n\nFeatures: +sqlite +markdown +colorschemes -javascript_required -curl\n\n   system vimrc file: "hldr-content/site.yaml"\n     user vimrc file: none. you're a visitor.`); return; }
-    if (is("smile")) { more(BANNER + "\n\n              thanks for reading the source."); return; }
+    if (is("smile")) { site().then(({ banner }) => more((banner ? banner.art + "\n\n" : "") + "              thanks for reading the source.")); return; }
     if (is("intro", "Alpha", "Dashboard")) { intro(); return; }
     if (is("q", "quit", "qa", "qall", "clo", "close")) { msg("this is a website. Close the tab, or stay: :help", "w"); return; }
     if (is("q!", "qa!", "cq")) { msg("E37: No write since last change. Just kidding, there were none. The tab stays.", "w"); return; }
@@ -364,12 +372,13 @@
     $(".status .ft").textContent = ft;
     win.scrollTop = 0; mark(0, false);
   };
-  const intro = () => {
+  const intro = async () => {
+    const { banner, intro: line } = await site();
     history.replaceState(null, "", "/");
     const opt = (k, label, cmd, attr) => `<a href="#" ${attr} data-key="${k}"><span class="kk">${k}</span><span>${label}</span><span class="mk">${cmd}</span></a>`;
     transient("[No Name]", "", `<div class="splash"><pre class="tildes" aria-hidden="true">${"~\n".repeat(120)}</pre><div class="intro-in">` +
-      `<pre class="ban" aria-label="HLDR">${BANNER}</pre>` +
-      `<p class="iv">HLDR v${esc(version)}</p><p class="mk">hvpaiva.dev · readable by anyone, edited only through git</p><div class="opts">` +
+      (banner ? `<pre class="ban" aria-label="${esc(banner.alt)}">${esc(banner.art)}</pre>` : "") +
+      `<p class="iv">HLDR v${esc(version)}</p>` + (line ? `<p class="mk">${esc(line)}</p>` : "") + `<div class="opts">` +
       opt("e", "README.md", ":e README.md", 'data-go="/"') + opt("f", "find file", ":find", 'data-ex="find"') +
       opt("p", "projects/", ":e projects/", 'data-go="/projects"') + opt("c", "colorscheme", ":colo", 'data-go="/theme"') +
       opt("h", "help", ":help", 'data-go="/help"') + opt("q", "quit", ":q", 'data-ex="q"') +
@@ -541,7 +550,7 @@
         if (a) { done(); a.focus(); }
         return;
       }
-      case "-": done(); go(here.startsWith("/projects/") ? "/projects" : "/"); return;
+      case "-": done(); go(DIRS.find((d) => here.startsWith(d + "/")) || "/"); return;
       case " e": done(); toggleTree(); return;
       case "  ": case " ff": done(); finder(); return;
       case " fh": done(); ex("help"); return;

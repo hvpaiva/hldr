@@ -1,107 +1,65 @@
-use std::collections::HashMap;
+//! Reading the materialized content back, and the sync bookkeeping.
 
-use serde::Serialize;
+use std::cmp::Ordering;
+
+use serde_json::Value;
 use sqlx::FromRow;
 
-use crate::api::{BannerSpec, DescriptionsSpec};
-use crate::types::{AssetSpec, Palette, ProfileLinks, ProjectLinks, ProjectStatus};
+use crate::manifest;
+use crate::spec::{CollectionSpec, NavSpec, PageKindSpec, ProfileSpec, SiteSpec};
+use crate::types::Palette;
 use crate::{Db, Error};
 
-// Highlights first, in their order, then the most recently changed.
-macro_rules! ordered {
-    ($select:literal) => {
-        concat!(
-            $select,
-            " ORDER BY CASE WHEN highlight IS NULL THEN 1 ELSE 0 END,",
-            " highlight ASC, updated_at DESC"
-        )
-    };
+#[derive(Debug, Clone, PartialEq)]
+pub struct Site {
+    pub spec: SiteSpec,
+    pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Profile {
+    pub spec: ProfileSpec,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Nav {
+    pub spec: NavSpec,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageKind {
     pub name: String,
-    pub headline: String,
-    pub bio: String,
-    pub about_source: String,
-    pub about_html: String,
-    pub about_text: String,
-    pub email: Option<String>,
-    pub links: ProfileLinks,
+    pub spec: PageKindSpec,
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ProjectSummary {
-    pub slug: String,
-    pub title: String,
-    pub tagline: String,
-    pub status: ProjectStatus,
-    pub highlight: Option<i64>,
-    pub tags: Vec<String>,
-    pub links: ProjectLinks,
-    pub github_repo: Option<String>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct Collection {
+    pub name: String,
+    pub spec: CollectionSpec,
+    pub updated_at: String,
+}
+
+/// A page of any type, without its markdown, which [`Db::content`] reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Page {
+    pub page: manifest::Page,
     pub created_at: String,
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct Project {
-    pub slug: String,
-    pub title: String,
-    pub tagline: String,
-    pub status: ProjectStatus,
-    pub highlight: Option<i64>,
-    pub tags: Vec<String>,
-    pub links: ProjectLinks,
-    pub github_repo: Option<String>,
-    pub draft: bool,
-    pub assets: Vec<AssetSpec>,
-    /// Markdown body exactly as written below the frontmatter.
-    pub body_source: String,
-    pub body_html: String,
-    pub body_text: String,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SiteConfig {
-    pub title: String,
-    /// Name of the default theme.
-    pub theme: String,
-    pub banner: Option<BannerSpec>,
-    pub descriptions: DescriptionsSpec,
-    pub blog_enabled: bool,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
     pub slug: String,
     pub title: String,
     pub dark: bool,
+    /// Place in the picker; see [`crate::spec::ThemeSpec::order`].
+    pub order: Option<i64>,
+    pub hidden: bool,
     pub colors: Palette,
     pub updated_at: String,
-}
-
-#[derive(FromRow)]
-struct SiteRow {
-    title: String,
-    theme: String,
-    banner: Option<String>,
-    descriptions: String,
-    blog_enabled: bool,
-    updated_at: String,
-}
-
-#[derive(FromRow)]
-struct ThemeRow {
-    slug: String,
-    title: String,
-    dark: bool,
-    colors: String,
-    updated_at: String,
 }
 
 /// Which content revision the database materializes.
@@ -114,34 +72,42 @@ pub struct SyncState {
 }
 
 #[derive(FromRow)]
-struct ProfileRow {
-    name: String,
-    headline: String,
-    bio: String,
-    about_source: String,
-    about_html: String,
-    about_text: String,
-    email: Option<String>,
-    links: String,
+struct ThemeRow {
+    slug: String,
+    title: String,
+    dark: bool,
+    sort_order: Option<i64>,
+    hidden: bool,
+    colors: String,
     updated_at: String,
 }
 
 #[derive(FromRow)]
-struct ProjectRow {
-    slug: String,
-    title: String,
-    tagline: String,
-    status: String,
-    highlight: Option<i64>,
-    tags: String,
-    links: String,
-    github_repo: Option<String>,
-    draft: bool,
-    body_source: String,
-    body_html: String,
-    body_text: String,
+struct NamedRow {
+    name: String,
+    spec: String,
+    updated_at: String,
+}
+
+#[derive(FromRow)]
+struct PageRow {
+    kind: String,
+    name: String,
+    collection: Option<String>,
+    metadata: String,
+    spec: String,
     created_at: String,
     updated_at: String,
+}
+
+// Every column of `themes` this release reads, then the rest of the query.
+macro_rules! themes {
+    ($rest:literal) => {
+        concat!(
+            "SELECT slug, title, dark, sort_order, hidden, colors, updated_at FROM themes",
+            $rest
+        )
+    };
 }
 
 impl Db {
@@ -152,168 +118,152 @@ impl Db {
         Ok(())
     }
 
-    pub async fn blog_enabled(&self) -> Result<bool, Error> {
-        Ok(self.site_config().await?.blog_enabled)
-    }
-
-    pub async fn site_config(&self) -> Result<SiteConfig, Error> {
-        self.site().await?.ok_or(Error::Invariant("site missing"))
-    }
-
-    /// The site configuration; `None` until content with a `site.yaml` has
-    /// been synced.
-    pub async fn site(&self) -> Result<Option<SiteConfig>, Error> {
-        let row: Option<SiteRow> = sqlx::query_as(
-            "SELECT title, theme, banner, descriptions, blog_enabled, updated_at
-             FROM site WHERE id = 1",
-        )
-        .fetch_optional(self.pool())
-        .await?;
-        row.map(|row| {
-            Ok(SiteConfig {
-                title: row.title,
-                theme: row.theme,
-                banner: row
-                    .banner
-                    .as_deref()
-                    .map(serde_json::from_str)
-                    .transpose()?,
-                descriptions: serde_json::from_str(&row.descriptions)?,
-                blog_enabled: row.blog_enabled,
-                updated_at: row.updated_at,
+    /// The site settings; `None` until content has been synced.
+    pub async fn site(&self) -> Result<Option<Site>, Error> {
+        let row: Option<(String, String, String, String)> =
+            sqlx::query_as("SELECT title, theme, values_json, updated_at FROM site WHERE id = 1")
+                .fetch_optional(self.pool())
+                .await?;
+        row.map(|(title, theme, values, updated_at)| {
+            Ok(Site {
+                spec: SiteSpec {
+                    title,
+                    theme,
+                    values: serde_json::from_str(&values)?,
+                },
+                updated_at,
             })
         })
         .transpose()
     }
 
-    pub async fn theme(&self, slug: &str) -> Result<Option<Theme>, Error> {
-        let row: Option<ThemeRow> = sqlx::query_as(
-            "SELECT slug, title, dark, colors, updated_at FROM themes WHERE slug = ?1",
-        )
-        .bind(slug)
-        .fetch_optional(self.pool())
-        .await?;
-        row.map(theme_from_row).transpose()
-    }
-
-    /// Every theme, by name.
-    pub async fn themes(&self) -> Result<Vec<Theme>, Error> {
-        let rows: Vec<ThemeRow> = sqlx::query_as(
-            "SELECT slug, title, dark, colors, updated_at FROM themes ORDER BY slug",
-        )
-        .fetch_all(self.pool())
-        .await?;
-        rows.into_iter().map(theme_from_row).collect()
+    /// The site settings, which synced content always has.
+    pub async fn site_config(&self) -> Result<Site, Error> {
+        self.site().await?.ok_or(Error::Invariant("site missing"))
     }
 
     pub async fn profile(&self) -> Result<Profile, Error> {
-        let row: ProfileRow = sqlx::query_as(
-            "SELECT name, headline, bio, about_source, about_html, about_text,
-                    email, links, updated_at
-             FROM profile WHERE id = 1",
+        let row: (String, String, String, Option<String>, String, String) = sqlx::query_as(
+            "SELECT name, headline, bio, email, links, updated_at FROM profile WHERE id = 1",
         )
         .fetch_optional(self.pool())
         .await?
         .ok_or(Error::Invariant("profile missing"))?;
+        let (name, headline, bio, email, links, updated_at) = row;
         Ok(Profile {
-            name: row.name,
-            headline: row.headline,
-            bio: row.bio,
-            about_source: row.about_source,
-            about_html: row.about_html,
-            about_text: row.about_text,
-            email: row.email,
-            links: serde_json::from_str(&row.links)?,
-            updated_at: row.updated_at,
+            spec: ProfileSpec {
+                name,
+                headline,
+                bio,
+                email,
+                links: serde_json::from_str(&links)?,
+            },
+            updated_at,
         })
     }
 
-    /// Published projects, without bodies.
-    pub async fn projects(&self) -> Result<Vec<ProjectSummary>, Error> {
-        let rows: Vec<ProjectRow> = sqlx::query_as(ordered!(
-            "SELECT slug, title, tagline, status, highlight, tags, links, github_repo, draft,
-                    '' AS body_source, '' AS body_html, '' AS body_text, created_at, updated_at
-             FROM projects WHERE draft = 0"
-        ))
-        .fetch_all(self.pool())
-        .await?;
-        rows.into_iter().map(summary_from_row).collect()
+    /// The nav; `None` until this release has synced content, which is how
+    /// `/readyz` tells a database an older release synced.
+    pub async fn nav(&self) -> Result<Option<Nav>, Error> {
+        let row: Option<(String, String)> =
+            sqlx::query_as("SELECT spec, updated_at FROM nav WHERE id = 1")
+                .fetch_optional(self.pool())
+                .await?;
+        row.map(|(spec, updated_at)| {
+            Ok(Nav {
+                spec: serde_json::from_str(&spec)?,
+                updated_at,
+            })
+        })
+        .transpose()
     }
 
-    pub async fn highlighted_projects(&self) -> Result<Vec<ProjectSummary>, Error> {
-        let all = self.projects().await?;
-        let highlighted: Vec<ProjectSummary> = all
-            .iter()
-            .filter(|project| project.highlight.is_some())
-            .cloned()
-            .collect();
-        if highlighted.is_empty() {
-            Ok(all)
-        } else {
-            Ok(highlighted)
-        }
-    }
-
-    /// A published project.
-    pub async fn project(&self, slug: &str) -> Result<Option<Project>, Error> {
-        Ok(self
-            .any_project(slug)
-            .await?
-            .filter(|project| !project.draft))
-    }
-
-    /// A project, drafts included.
-    pub async fn any_project(&self, slug: &str) -> Result<Option<Project>, Error> {
-        let row: Option<ProjectRow> = sqlx::query_as(
-            "SELECT slug, title, tagline, status, highlight, tags, links, github_repo, draft,
-                    body_source, body_html, body_text, created_at, updated_at
-             FROM projects WHERE slug = ?1",
-        )
-        .bind(slug)
-        .fetch_optional(self.pool())
-        .await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let mut assets = self.assets(Some(slug)).await?;
-        let assets = assets.remove(slug).unwrap_or_default();
-        project_from_row(row, assets).map(Some)
-    }
-
-    /// Every project with its body, drafts included.
-    pub async fn all_projects(&self) -> Result<Vec<Project>, Error> {
-        let rows: Vec<ProjectRow> = sqlx::query_as(ordered!(
-            "SELECT slug, title, tagline, status, highlight, tags, links, github_repo, draft,
-                    body_source, body_html, body_text, created_at, updated_at
-             FROM projects"
-        ))
-        .fetch_all(self.pool())
-        .await?;
-        let mut assets = self.assets(None).await?;
+    /// Every page type, by name.
+    pub async fn page_kinds(&self) -> Result<Vec<PageKind>, Error> {
+        let rows: Vec<NamedRow> =
+            sqlx::query_as("SELECT name, spec, updated_at FROM page_kinds ORDER BY name")
+                .fetch_all(self.pool())
+                .await?;
         rows.into_iter()
             .map(|row| {
-                let own = assets.remove(&row.slug).unwrap_or_default();
-                project_from_row(row, own)
+                Ok(PageKind {
+                    spec: serde_json::from_str(&row.spec)?,
+                    name: row.name,
+                    updated_at: row.updated_at,
+                })
             })
             .collect()
     }
 
-    async fn assets(&self, slug: Option<&str>) -> Result<HashMap<String, Vec<AssetSpec>>, Error> {
-        let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
-            "SELECT project_slug, path, caption FROM project_assets
-             WHERE ?1 IS NULL OR project_slug = ?1
-             ORDER BY id",
+    /// Every collection, by name.
+    pub async fn collections(&self) -> Result<Vec<Collection>, Error> {
+        let rows: Vec<NamedRow> =
+            sqlx::query_as("SELECT name, spec, updated_at FROM collections ORDER BY name")
+                .fetch_all(self.pool())
+                .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(Collection {
+                    spec: serde_json::from_str(&row.spec)?,
+                    name: row.name,
+                    updated_at: row.updated_at,
+                })
+            })
+            .collect()
+    }
+
+    /// Every page of every type, drafts included, by kind and name.
+    pub async fn pages(&self) -> Result<Vec<Page>, Error> {
+        let rows: Vec<PageRow> = sqlx::query_as(
+            "SELECT kind, name, collection, metadata, spec, created_at, updated_at
+             FROM pages ORDER BY kind, name",
         )
-        .bind(slug)
         .fetch_all(self.pool())
         .await?;
-        let mut out: HashMap<String, Vec<AssetSpec>> = HashMap::new();
-        for (project, path, caption) in rows {
-            out.entry(project)
-                .or_default()
-                .push(AssetSpec { path, caption });
-        }
-        Ok(out)
+        rows.into_iter().map(page_from_row).collect()
+    }
+
+    /// A page, drafts included.
+    pub async fn page(&self, kind: &str, name: &str) -> Result<Option<Page>, Error> {
+        let row: Option<PageRow> = sqlx::query_as(
+            "SELECT kind, name, collection, metadata, spec, created_at, updated_at
+             FROM pages WHERE kind = ?1 AND name = ?2",
+        )
+        .bind(kind)
+        .bind(name)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(page_from_row).transpose()
+    }
+
+    /// A page's markdown.
+    pub async fn content(&self, kind: &str, name: &str) -> Result<Option<String>, Error> {
+        Ok(
+            sqlx::query_scalar("SELECT content FROM pages WHERE kind = ?1 AND name = ?2")
+                .bind(kind)
+                .bind(name)
+                .fetch_optional(self.pool())
+                .await?,
+        )
+    }
+
+    pub async fn theme(&self, slug: &str) -> Result<Option<Theme>, Error> {
+        let row: Option<ThemeRow> = sqlx::query_as(themes!(" WHERE slug = ?1"))
+            .bind(slug)
+            .fetch_optional(self.pool())
+            .await?;
+        row.map(theme_from_row).transpose()
+    }
+
+    /// Every theme, hidden ones included: those with an order first, lowest
+    /// first, then the others by name.
+    pub async fn themes(&self) -> Result<Vec<Theme>, Error> {
+        let rows: Vec<ThemeRow> = sqlx::query_as(themes!(
+            " ORDER BY CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END, sort_order, slug"
+        ))
+        .fetch_all(self.pool())
+        .await?;
+        rows.into_iter().map(theme_from_row).collect()
     }
 
     pub async fn sync_state(&self) -> Result<SyncState, Error> {
@@ -359,12 +309,52 @@ impl Db {
         .await?;
         Ok(())
     }
+}
 
-    pub async fn project_count(&self) -> Result<i64, Error> {
-        Ok(sqlx::query_scalar("SELECT COUNT(*) FROM projects")
-            .fetch_one(self.pool())
-            .await?)
+/// Orders a collection's pages as its listing shows them: ascending by
+/// `field`, pages without it last, then the most recently changed first.
+pub fn order(pages: &mut [&Page], field: Option<&str>) {
+    let key = |page: &Page| {
+        field
+            .and_then(|field| page.page.metadata.get(field))
+            .cloned()
+    };
+    pages.sort_by(|a, b| {
+        let by_field = match (key(a), key(b)) {
+            (Some(x), Some(y)) => compare(&x, &y),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        };
+        by_field
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+            .then_with(|| a.page.name.cmp(&b.page.name))
+    });
+}
+
+fn compare(a: &Value, b: &Value) -> Ordering {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x
+            .as_i64()
+            .cmp(&y.as_i64())
+            .then_with(|| x.to_string().cmp(&y.to_string())),
+        (Value::String(x), Value::String(y)) => x.cmp(y),
+        _ => Ordering::Equal,
     }
+}
+
+fn page_from_row(row: PageRow) -> Result<Page, Error> {
+    Ok(Page {
+        page: manifest::Page {
+            kind: row.kind,
+            name: row.name,
+            collection: row.collection,
+            metadata: serde_json::from_str(&row.metadata)?,
+            spec: serde_json::from_str(&row.spec)?,
+        },
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    })
 }
 
 fn theme_from_row(row: ThemeRow) -> Result<Theme, Error> {
@@ -372,6 +362,8 @@ fn theme_from_row(row: ThemeRow) -> Result<Theme, Error> {
         slug: row.slug,
         title: row.title,
         dark: row.dark,
+        order: row.sort_order,
+        hidden: row.hidden,
         colors: serde_json::from_str(&row.colors)?,
         updated_at: row.updated_at,
     })
@@ -381,133 +373,151 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-fn summary_from_row(row: ProjectRow) -> Result<ProjectSummary, Error> {
-    Ok(ProjectSummary {
-        slug: row.slug,
-        title: row.title,
-        tagline: row.tagline,
-        status: ProjectStatus::parse(&row.status)?,
-        highlight: row.highlight,
-        tags: serde_json::from_str(&row.tags)?,
-        links: serde_json::from_str(&row.links)?,
-        github_repo: row.github_repo,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-    })
-}
-
-fn project_from_row(row: ProjectRow, assets: Vec<AssetSpec>) -> Result<Project, Error> {
-    Ok(Project {
-        slug: row.slug,
-        title: row.title,
-        tagline: row.tagline,
-        status: ProjectStatus::parse(&row.status)?,
-        highlight: row.highlight,
-        tags: serde_json::from_str(&row.tags)?,
-        links: serde_json::from_str(&row.links)?,
-        github_repo: row.github_repo,
-        draft: row.draft,
-        assets,
-        body_source: row.body_source,
-        body_html: row.body_html,
-        body_text: row.body_text,
-        created_at: row.created_at,
-        updated_at: row.updated_at,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::index;
-    use std::fs;
-
-    const PROFILE: &str = "\
----
-kind: Profile
-name: Highlander Paiva
-headline: senior platform engineer
-bio: writes software.
-email: contact@hvpaiva.dev
-links:
-  github: https://github.com/hvpaiva
----
-design to platform.
-";
-
-    const PROJECT: &str = "\
----
-kind: Project
-title: Atlas
-tagline: CubeSat ADCS in Rust
-status: active
-highlight: 1
-tags: [rust]
-links:
-  repo: https://github.com/hvpaiva/atlas
-assets:
-  - path: atlas/overview.png
----
-
-Body.
-";
+    use crate::testing::{self, TREE};
 
     async fn seeded() -> (tempfile::TempDir, Db) {
         let dir = tempfile::tempdir().unwrap();
-        crate::testing::write_site(dir.path());
-        fs::write(dir.path().join("profile.md"), PROFILE).unwrap();
-        fs::create_dir(dir.path().join("projects")).unwrap();
-        fs::write(dir.path().join("projects/atlas.md"), PROJECT).unwrap();
-        let draft = PROJECT
-            .replace("title: Atlas", "title: Hidden\ndraft: true")
-            .replace("highlight: 1\n", "")
-            .replace("assets:\n  - path: atlas/overview.png\n", "");
-        fs::write(dir.path().join("projects/hidden.md"), draft).unwrap();
+        let content = dir.path().join("content");
+        testing::write(&content, &TREE);
+        let draft = testing::ATLAS
+            .replace("name: atlas", "name: hidden")
+            .replace("title: Atlas", "title: Hidden")
+            .replace("  highlight: 1\n", "")
+            .replace("spec:\n", "spec:\n  draft: true\n");
+        testing::write(
+            &content,
+            &[
+                (
+                    "projects/hidden.yaml",
+                    draft.replace("atlas.md", "hidden.md").as_str(),
+                ),
+                ("projects/hidden.md", "Draft.\n"),
+            ],
+        );
         let db = Db::open(dir.path().join("hldr.db")).await.unwrap();
-        index::sync(db.pool(), dir.path()).await.unwrap();
+        index::sync(db.pool(), &content).await.unwrap();
         (dir, db)
     }
 
     #[tokio::test]
-    async fn reads_profile_and_project() {
+    async fn reads_what_the_indexer_wrote() {
         let (_dir, db) = seeded().await;
+        let site = db.site_config().await.unwrap();
+        assert_eq!(site.spec.title, "example.test");
+        assert_eq!(site.spec.values["about"], "Design to platform.");
         let profile = db.profile().await.unwrap();
-        assert_eq!(profile.name, "Highlander Paiva");
-        assert!(profile.about_html.contains("design"));
-
-        let listed = db.projects().await.unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].slug, "atlas");
-
-        let project = db.project("atlas").await.unwrap().unwrap();
-        assert!(project.body_html.contains("Body"));
-        assert_eq!(project.body_source.trim(), "Body.");
-        assert_eq!(project.assets[0].path, "atlas/overview.png");
-        assert!(!db.blog_enabled().await.unwrap());
-        assert_eq!(db.project_count().await.unwrap(), 2);
+        assert_eq!(profile.spec.name, "Highlander Paiva");
+        let nav = db.nav().await.unwrap().unwrap();
+        assert_eq!(nav.spec.sections[0].name, "files");
+        let kinds = db.page_kinds().await.unwrap();
+        assert_eq!(kinds[0].spec.names.plural, "projects");
+        let collections = db.collections().await.unwrap();
+        assert_eq!(collections[0].spec.order.as_deref(), Some("highlight"));
+        let theme = db.theme("nord").await.unwrap().unwrap();
+        assert_eq!(theme.colors.bg.as_str(), "#2e3440");
+        assert!(!theme.hidden);
         db.ping().await.unwrap();
     }
 
     #[tokio::test]
-    async fn drafts_stay_out_of_public_reads() {
+    async fn pages_keep_their_type_metadata_and_content() {
         let (_dir, db) = seeded().await;
-        assert!(db.project("hidden").await.unwrap().is_none());
+        let pages = db.pages().await.unwrap();
+        let names: Vec<(&str, &str)> = pages
+            .iter()
+            .map(|p| (p.page.kind.as_str(), p.page.name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("Page", "about"),
+                ("Page", "index"),
+                ("Page", "not-found"),
+                ("Page", "theme"),
+                ("Project", "atlas"),
+                ("Project", "hidden"),
+            ]
+        );
+        let atlas = db.page("Project", "atlas").await.unwrap().unwrap();
+        assert_eq!(atlas.page.collection.as_deref(), Some("projects"));
+        assert_eq!(atlas.page.metadata["tagline"], "CubeSat ADCS in Rust");
         assert!(
-            db.projects()
+            db.page("Project", "hidden")
                 .await
                 .unwrap()
-                .iter()
-                .all(|p| p.slug != "hidden")
+                .unwrap()
+                .page
+                .spec
+                .draft
         );
+        assert_eq!(
+            db.content("Project", "atlas").await.unwrap().as_deref(),
+            Some(testing::ATLAS_MD)
+        );
+        assert!(
+            db.content("Page", "not-found")
+                .await
+                .unwrap()
+                .unwrap()
+                .contains("start here")
+        );
+        assert_eq!(db.content("Page", "nope").await.unwrap(), None);
+    }
 
-        let draft = db.any_project("hidden").await.unwrap().unwrap();
-        assert!(draft.draft);
-        let all = db.all_projects().await.unwrap();
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[0].slug, "atlas");
-        assert_eq!(all[0].assets.len(), 1);
-        assert_eq!(all[1].slug, "hidden");
-        assert!(all[1].assets.is_empty());
+    #[tokio::test]
+    async fn orders_pages_as_their_collection_says() {
+        let (_dir, db) = seeded().await;
+        let pages = db.pages().await.unwrap();
+        let mut members: Vec<&Page> = pages.iter().filter(|p| p.page.kind == "Project").collect();
+        order(&mut members, Some("highlight"));
+        let names: Vec<&str> = members.iter().map(|p| p.page.name.as_str()).collect();
+        assert_eq!(names, ["atlas", "hidden"], "highlighted first");
+
+        let mut a = pages[0].clone();
+        let mut b = pages[1].clone();
+        a.updated_at = "2026-01-01T00:00:00Z".to_owned();
+        b.updated_at = "2026-02-01T00:00:00Z".to_owned();
+        let mut both = vec![&a, &b];
+        order(&mut both, None);
+        assert_eq!(both[0].page.name, b.page.name, "newest first");
+    }
+
+    #[tokio::test]
+    async fn orders_themes_by_order_then_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = dir.path().join("content");
+        testing::write(&content, &TREE);
+        let theme = |name: &str, extra: &str| {
+            testing::THEME
+                .replace("name: nord", &format!("name: {name}"))
+                .replace("  dark: true\n", &format!("  dark: true\n{extra}"))
+        };
+        testing::write(
+            &content,
+            &[
+                ("themes/alpha.yaml", &theme("alpha", "")),
+                ("themes/zeta.yaml", &theme("zeta", "  order: 1\n")),
+                (
+                    "themes/mid.yaml",
+                    &theme("mid", "  order: 2\n  hidden: true\n"),
+                ),
+            ],
+        );
+        let db = Db::open(dir.path().join("hldr.db")).await.unwrap();
+        index::sync(db.pool(), &content).await.unwrap();
+        let names: Vec<String> = db
+            .themes()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.slug)
+            .collect();
+        assert_eq!(names, ["zeta", "mid", "alpha", "nord"]);
+        assert!(db.theme("mid").await.unwrap().unwrap().hidden);
     }
 
     #[tokio::test]

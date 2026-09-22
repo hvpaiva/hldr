@@ -1,11 +1,24 @@
 //! Renders content as the source an editor would show: one element per
 //! line, syntax left visible and coloured, links still clickable.
 
+use hldr_core::template::{self, Block, Segment};
 use maud::{Markup, html};
 
+pub use hldr_core::template::safe_url;
+
+/// What the directives in a page's markdown render: values inside a line,
+/// and whole lines for a block directive.
+pub trait Expand {
+    /// The text a value path names, as a template inserts it.
+    fn value(&self, path: &str) -> String;
+    /// The lines a block directive renders; none is fine.
+    fn block(&self, block: &Block) -> Vec<Markup>;
+}
+
 /// Markdown source, one element per line. Headings become real heading
-/// elements so the page keeps its outline for readers and crawlers.
-pub fn markdown(source: &str) -> Vec<Markup> {
+/// elements so the page keeps its outline for readers and crawlers. A block
+/// directive alone on its line renders the lines it stands for, or none.
+pub fn markdown(source: &str, expand: &dyn Expand) -> Vec<Markup> {
     let mut lines = Vec::new();
     let mut fence: Option<&str> = None;
     for raw in source.lines() {
@@ -24,30 +37,61 @@ pub fn markdown(source: &str) -> Vec<Markup> {
             lines.push(html! { p.mk { (raw) } });
             continue;
         }
-        lines.push(markdown_line(raw));
+        if let Ok(Some(block)) = template::block(raw) {
+            lines.extend(expand.block(&block));
+            continue;
+        }
+        lines.push(markdown_line(raw, expand));
     }
     lines
 }
 
-fn markdown_line(raw: &str) -> Markup {
+/// The block structure comes from the line as written, before any value is
+/// inserted, so a value can never turn into a heading or a list.
+fn markdown_line(raw: &str, expand: &dyn Expand) -> Markup {
     if raw.trim().is_empty() {
         return html! { p {} };
     }
     if let Some((level, text)) = heading(raw) {
         let marker = format!("{} ", "#".repeat(level));
+        let text = expanded(text, expand);
         return match level {
-            1 => html! { h1.h1 { span.mk { (marker) } (inline(text)) } },
-            2 => html! { h2.h2 { span.mk { (marker) } (inline(text)) } },
-            _ => html! { h3.h2 { span.mk { (marker) } (inline(text)) } },
+            1 => html! { h1.h1 { span.mk { (marker) } (text) } },
+            2 => html! { h2.h2 { span.mk { (marker) } (text) } },
+            _ => html! { h3.h2 { span.mk { (marker) } (text) } },
         };
     }
     if let Some(text) = raw.strip_prefix("> ") {
-        return html! { p.q { span.mk { "> " } (inline(text)) } };
+        return html! { p.q { span.mk { "> " } (expanded(text, expand)) } };
     }
     if let Some((indent, marker, text)) = list_item(raw) {
-        return html! { p { (indent) span.mk { (marker) } (inline(text)) } };
+        return html! { p { (indent) span.mk { (marker) } (expanded(text, expand)) } };
     }
-    html! { p { (inline(raw)) } }
+    html! { p { (expanded(raw, expand)) } }
+}
+
+/// Inline markdown with its inline directives rendered: values as inline
+/// markdown, links without brackets. Markdown markers do not reach across a
+/// directive. A line that does not parse, which the indexer never stores,
+/// renders as written.
+pub fn expanded(text: &str, expand: &dyn Expand) -> Markup {
+    let Ok(parts) = template::segments(text) else {
+        return inline(text);
+    };
+    html! {
+        @for part in &parts {
+            @match part {
+                Segment::Text(text) => (inline(text)),
+                Segment::Value(path) => (inline(&expand.value(path))),
+                Segment::Link { href, label } => {
+                    @match safe_url(href) {
+                        Some(href) => a href=(href) { (label) },
+                        None => (label),
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn heading(raw: &str) -> Option<(usize, &str)> {
@@ -147,18 +191,6 @@ fn link(rest: &str) -> Option<(&str, &str, usize)> {
     Some((label, url, 1 + close + 2 + end + 1))
 }
 
-/// Allows http(s), mailto and same-site paths. Anything else, such as
-/// `javascript:`, is rendered as text instead of a link.
-pub fn safe_url(url: &str) -> Option<&str> {
-    let lower = url.trim().to_ascii_lowercase();
-    let ok = lower.starts_with("https://")
-        || lower.starts_with("http://")
-        || lower.starts_with("mailto:")
-        || (lower.starts_with('/') && !lower.starts_with("//"))
-        || lower.starts_with('#');
-    ok.then_some(url.trim())
-}
-
 /// A YAML `key: value` line, with the value already rendered.
 pub fn yaml_pair(indent: usize, key: &str, value: Markup) -> Markup {
     html! {
@@ -176,30 +208,29 @@ pub fn yaml_str(value: &str) -> Markup {
     html! { span.s { (value) } }
 }
 
-/// Wraps prose at `width` columns without splitting words.
-pub fn wrap(text: &str, width: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        let fits =
-            current.is_empty() || current.chars().count() + 1 + word.chars().count() <= width;
-        if !fits {
-            lines.push(std::mem::take(&mut current));
-        }
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(word);
-    }
-    if !current.is_empty() {
-        lines.push(current);
-    }
-    lines
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Values are their path in capitals; blocks render one marked line.
+    struct Stub;
+
+    impl Expand for Stub {
+        fn value(&self, path: &str) -> String {
+            path.to_uppercase()
+        }
+
+        fn block(&self, block: &Block) -> Vec<Markup> {
+            match block {
+                Block::Links { .. } => Vec::new(),
+                other => vec![html! { p.block { (format!("{other:?}")) } }],
+            }
+        }
+    }
+
+    fn markdown(source: &str) -> Vec<Markup> {
+        super::markdown(source, &Stub)
+    }
 
     fn render(lines: &[Markup]) -> Vec<String> {
         lines.iter().map(|line| line.0.clone()).collect()
@@ -275,9 +306,64 @@ mod tests {
     }
 
     #[test]
-    fn wrap_respects_width() {
-        let lines = wrap("aaa bbb ccc ddd", 7);
-        assert_eq!(lines, vec!["aaa bbb", "ccc ddd"]);
-        assert!(wrap("", 10).is_empty());
+    fn directives_render_in_place() {
+        let out = render(&markdown(
+            "# {{ profile.name }}\n> {{ profile.headline }}\n## {{ link /projects Projects }}\n{{ site.values.about }} More in {{ link /about about.md }}.\n",
+        ));
+        assert_eq!(
+            out[0],
+            r#"<h1 class="h1"><span class="mk"># </span>PROFILE.NAME</h1>"#
+        );
+        assert_eq!(
+            out[1],
+            r#"<p class="q"><span class="mk">&gt; </span>PROFILE.HEADLINE</p>"#
+        );
+        assert_eq!(
+            out[2],
+            r#"<h2 class="h2"><span class="mk">## </span><a href="/projects">Projects</a></h2>"#
+        );
+        assert_eq!(
+            out[3],
+            r#"<p>SITE.VALUES.ABOUT More in <a href="/about">about.md</a>.</p>"#
+        );
+    }
+
+    #[test]
+    fn block_directives_take_their_line_or_none() {
+        let out = render(&markdown(
+            "a\n{{ links }}\n{{ clone page.links.repo }}\nb\n",
+        ));
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert!(out[1].contains("Clone"), "{out:?}");
+    }
+
+    #[test]
+    fn nothing_expands_in_code() {
+        let out = render(&markdown(
+            "```\n{{ profile.name }}\n```\nsay `{{ profile.name }}`\n",
+        ));
+        assert_eq!(out[1], r#"<p class="code">{{ profile.name }}</p>"#);
+        assert_eq!(
+            out[3],
+            r#"<p>say <span class="s">`{{ profile.name }}`</span></p>"#
+        );
+    }
+
+    #[test]
+    fn values_are_inline_markdown_but_never_blocks() {
+        struct Heading;
+        impl Expand for Heading {
+            fn value(&self, _: &str) -> String {
+                "# not a heading, **strong** though".to_owned()
+            }
+            fn block(&self, _: &Block) -> Vec<Markup> {
+                Vec::new()
+            }
+        }
+        let out = render(&super::markdown("{{ site.values.x }}\n", &Heading));
+        assert_eq!(
+            out[0],
+            r#"<p># not a heading, <span class="mk">**</span><strong>strong</strong><span class="mk">**</span> though</p>"#
+        );
     }
 }

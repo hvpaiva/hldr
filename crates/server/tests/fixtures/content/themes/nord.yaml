@@ -1,15 +1,18 @@
 kind: Theme
-title: Nord
-dark: true
-colors:
-  bg: "#2e3440"
-  fg: "#d8dee9"
-  fg_dim: "#e5e9f0"
-  fg_muted: "#4c566a"
-  accent: "#88c0d0"
-  accent2: "#81a1c1"
-  highlight: "#ebcb8b"
-  special: "#b48ead"
-  teal: "#8fbcbb"
-  error: "#bf616a"
-  border: "#3b4252"
+metadata:
+  name: nord
+spec:
+  title: Nord
+  dark: true
+  colors:
+    bg: "#2e3440"
+    fg: "#d8dee9"
+    fg_dim: "#e5e9f0"
+    fg_muted: "#4c566a"
+    accent: "#88c0d0"
+    accent2: "#81a1c1"
+    highlight: "#ebcb8b"
+    special: "#b48ead"
+    teal: "#8fbcbb"
+    error: "#bf616a"
+    border: "#3b4252"

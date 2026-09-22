@@ -1,0 +1,20 @@
+kind: PageKind
+metadata:
+  name: project
+spec:
+  names: {kind: Project, singular: project, plural: projects, short_names: [proj, p]}
+  fields:
+    tagline: {type: string, required: true}
+    status: {type: enum, values: [active, wip, archived], ok: [active], required: true}
+    highlight: {type: int}
+    tags: {type: list}
+    links: {type: links, keys: [repo, docs, demo]}
+    github: {type: string}
+  summary: tagline
+  footer: |
+
+    {{ clone page.links.repo }}
+    {{ link /projects "← projects/" }}
+  json_ld:
+    type: SoftwareSourceCode
+    map: {description: tagline, codeRepository: links.repo, programmingLanguage: tags}

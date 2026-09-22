@@ -17,10 +17,11 @@ mod write_tests;
 
 use anyhow::{Result, bail};
 use hldr_core::api::ApiResource;
+use hldr_core::manifest::Registry;
 use serde_json::json;
 
 use crate::client::Client;
-use crate::content::Target;
+use crate::content::{self, Target};
 use crate::discovery::Catalog;
 use crate::print::Fetched;
 
@@ -56,6 +57,7 @@ pub struct Writer<'a> {
     pub catalog: Catalog<'a>,
     pub target: Target,
     pub editor: Option<String>,
+    registry: Option<Registry>,
 }
 
 impl<'a> Writer<'a> {
@@ -71,7 +73,21 @@ impl<'a> Writer<'a> {
             client,
             catalog,
             editor,
+            registry: None,
         })
+    }
+
+    /// The server's page types, asked for once per run.
+    pub fn registry(&mut self) -> Result<Registry> {
+        if self.registry.is_none() {
+            self.registry = Some(content::registry(self.client)?);
+        }
+        Ok(self.registry.clone().unwrap_or_default())
+    }
+
+    /// The server's resource types, to name what a sync changed.
+    pub fn resources(&mut self) -> Result<Vec<ApiResource>> {
+        Ok(self.catalog.discovery()?.resources.clone())
     }
 
     pub fn resource(&mut self, kind: &str, verb: &str) -> Result<ApiResource> {
