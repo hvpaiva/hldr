@@ -9,6 +9,8 @@ pub mod github;
 #[cfg(feature = "store")]
 pub mod index;
 pub mod manifest;
+#[cfg(feature = "store")]
+pub mod metrics;
 pub mod spec;
 #[cfg(feature = "store")]
 pub mod store;

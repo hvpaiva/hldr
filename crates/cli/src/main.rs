@@ -176,6 +176,8 @@ enum Command {
     Sync(cmd::sync::Args),
     /// List the commits of the content repository, or show one
     History(cmd::history::Args),
+    /// Show the site's visits per day, or its top pages or referrers
+    Top(cmd::top::Args),
     /// Check content files or a checkout offline, as the server would index them
     Validate(cmd::validate::Args),
     /// Print the client, server and content versions
@@ -286,6 +288,7 @@ fn run(cli: &Cli, env: &Env, config: &Config, term: &Term, out: &mut dyn Write) 
             let token = || config::github_token(env, config);
             cmd::history::run(out, term, &connect()?, github::API, &token, args)
         }
+        Command::Top(args) => cmd::top::run(out, term, &connect()?, args),
         Command::Version(args) if args.client_only() => cmd::version::run(out, term, None, args),
         Command::Version(args) => cmd::version::run(out, term, Some(&connect()?), args),
         Command::Validate(args) => cmd::validate::run(out, term, args),

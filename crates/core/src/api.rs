@@ -300,6 +300,132 @@ pub struct GitHubQuota {
     pub observed_at: String,
 }
 
+/// How far back `/api/v1/metrics/*` reads: the last N UTC days, today
+/// included, or every day kept. Written `7d`, `30d` or `all`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Since {
+    Days(u16),
+    All,
+}
+
+impl Since {
+    /// The longest period in days: ten years.
+    pub const MAX_DAYS: u16 = 3660;
+}
+
+impl Default for Since {
+    fn default() -> Self {
+        Self::Days(7)
+    }
+}
+
+impl std::str::FromStr for Since {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        if text == "all" {
+            return Ok(Self::All);
+        }
+        text.strip_suffix('d')
+            .and_then(|days| days.parse().ok())
+            .filter(|days| (1..=Self::MAX_DAYS).contains(days))
+            .map(Self::Days)
+            .ok_or_else(|| {
+                format!(
+                    "{text:?} is not a period: use a number of days such as 7d, up to {}d, or all",
+                    Self::MAX_DAYS
+                )
+            })
+    }
+}
+
+impl std::fmt::Display for Since {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Days(days) => write!(f, "{days}d"),
+            Self::All => f.write_str("all"),
+        }
+    }
+}
+
+/// The UTC days a metrics answer covers, both ends included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Period {
+    /// As asked for: `7d`, `30d` or `all`.
+    pub since: String,
+    /// First day, `YYYY-MM-DD`.
+    pub from: String,
+    /// Last day, today.
+    pub to: String,
+}
+
+/// Visits per day, oldest first, one row for every day of the period.
+///
+/// A visitor is known only within its UTC day, so visitors over several
+/// days are the sum of each day's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DailyMetrics {
+    /// Always `DailyMetrics`.
+    pub kind: String,
+    pub period: Period,
+    pub total: Visits,
+    pub items: Vec<DayVisits>,
+}
+
+/// Counts over a period.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Visits {
+    /// Pages served, 404s aside.
+    pub views: u64,
+    /// Distinct visitors, summed day by day.
+    pub visitors: u64,
+    /// Requests from user agents that declare themselves bots.
+    pub bots: u64,
+}
+
+/// One UTC day's counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DayVisits {
+    /// `YYYY-MM-DD`.
+    pub day: String,
+    #[serde(flatten)]
+    pub visits: Visits,
+}
+
+/// Views per route over a period, most viewed first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PageMetrics {
+    /// Always `PageMetrics`.
+    pub kind: String,
+    pub period: Period,
+    pub items: Vec<PageVisits>,
+}
+
+/// One route's counts. Every request answered 404 is counted under `404`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PageVisits {
+    pub route: String,
+    pub views: u64,
+    /// Distinct visitors, summed day by day.
+    pub visitors: u64,
+}
+
+/// Views per referring host over a period, most first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReferrerMetrics {
+    /// Always `ReferrerMetrics`.
+    pub kind: String,
+    pub period: Period,
+    pub items: Vec<ReferrerVisits>,
+}
+
+/// Views that came from one host, lowercased; the site itself is left out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReferrerVisits {
+    pub host: String,
+    pub views: u64,
+}
+
 /// Body of `POST /api/v1/sync`. Empty, it syncs whatever the branch points
 /// at; with a revision, it waits for the branch to point there first, since
 /// GitHub can serve a stale ref for a few seconds after a push.
@@ -929,6 +1055,18 @@ mod tests {
             }
         }
         node
+    }
+
+    #[test]
+    fn a_period_is_days_or_all() {
+        assert_eq!("7d".parse(), Ok(Since::Days(7)));
+        assert_eq!("3660d".parse(), Ok(Since::Days(3660)));
+        assert_eq!("all".parse(), Ok(Since::All));
+        for bad in ["", "d", "0d", "7", "3661d", "-1d", "7w", "ALL"] {
+            assert!(bad.parse::<Since>().is_err(), "{bad:?}");
+        }
+        assert_eq!(Since::default().to_string(), "7d");
+        assert_eq!(Since::All.to_string(), "all");
     }
 
     fn project_kind() -> PageKindSpec {

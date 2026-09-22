@@ -18,6 +18,7 @@ mod api;
 mod content;
 mod html;
 mod listen;
+mod metrics;
 mod model;
 mod source;
 mod theme;
@@ -35,6 +36,7 @@ struct AppState {
     site: Site,
     syncer: Arc<content::Syncer>,
     started: Started,
+    metrics: Arc<metrics::Metrics>,
 }
 
 /// When this process started, for its uptime.
@@ -122,11 +124,18 @@ async fn main() {
         tokio::spawn(poll_content(Arc::clone(&syncer), every));
     }
 
+    let site = Site::from_env();
+    let metrics = Arc::new(metrics::Metrics::new(db.clone(), &site.host));
+    tokio::spawn(metrics::flush_every(
+        Arc::clone(&metrics),
+        metrics::FLUSH_EVERY,
+    ));
     let state = AppState {
         db: db.clone(),
-        site: Site::from_env(),
+        site,
         syncer,
         started,
+        metrics: Arc::clone(&metrics),
     };
     let site = site_router(state.clone());
     let private = api::router(state);
@@ -178,14 +187,20 @@ async fn main() {
         "hldr-server listening"
     );
 
-    axum::serve(listener, site)
-        .with_graceful_shutdown(shutdown())
-        .await
-        .expect("server error");
+    // The peer address is the client's only when no proxy is in front, as
+    // in development; metrics prefer X-Forwarded-For.
+    axum::serve(
+        listener,
+        site.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown())
+    .await
+    .expect("server error");
     api_server
         .await
         .expect("api server task panicked")
         .expect("api server error");
+    metrics.flush().await;
     content::record(
         &db,
         &NewEvent::normal(
@@ -236,6 +251,10 @@ fn site_router(state: AppState) -> Router {
         .route("/sitemap.xml", get(sitemap))
         .route("/robots.txt", get(robots))
         .fallback(not_found)
+        .layer(middleware::from_fn_with_state(
+            Arc::clone(&state.metrics),
+            metrics::count,
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(security_headers))
         .with_state(state)
@@ -767,6 +786,7 @@ mod tests {
         (
             dir,
             AppState {
+                metrics: Arc::new(metrics::Metrics::new(db.clone(), &site.host)),
                 db,
                 site,
                 syncer,
@@ -1374,10 +1394,168 @@ mod tests {
     #[tokio::test]
     async fn the_public_site_serves_nothing_the_server_keeps() {
         let (_dir, state) = state().await;
-        for path in ["/api/v1/events", "/api/v1/server", "/events", "/server"] {
+        for path in [
+            "/api/v1/events",
+            "/api/v1/server",
+            "/api/v1/metrics/daily",
+            "/events",
+            "/server",
+            "/metrics",
+        ] {
             let (status, _) = page(site_router(state.clone()), path, None).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
         }
+    }
+
+    const BROWSER: &str = "Mozilla/5.0 (X11; Linux x86_64) PrivacyProbe/1.0 Firefox/140.0";
+
+    /// A GET as it arrives through kamal-proxy.
+    async fn visit(
+        router: Router,
+        path: &str,
+        address: &str,
+        user_agent: &str,
+        referer: Option<&str>,
+    ) -> StatusCode {
+        let mut request = Request::get(path)
+            .header("x-forwarded-for", address)
+            .header(header::USER_AGENT, user_agent);
+        if let Some(referer) = referer {
+            request = request.header(header::REFERER, referer);
+        }
+        router
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn the_site_counts_views_and_keeps_no_one() {
+        let (dir, state) = state().await;
+        let site = || site_router(state.clone());
+        let referer = Some("https://News.Example.org/secret-thread?id=7");
+        for (path, address, agent, referer, expected) in [
+            ("/", "203.0.113.77", BROWSER, referer, StatusCode::OK),
+            ("/", "203.0.113.77", BROWSER, None, StatusCode::OK),
+            ("/help", "198.51.100.23", BROWSER, None, StatusCode::OK),
+            (
+                "/wp-login.php",
+                "203.0.113.77",
+                BROWSER,
+                None,
+                StatusCode::NOT_FOUND,
+            ),
+            ("/style.css", "203.0.113.77", BROWSER, None, StatusCode::OK),
+            ("/", "203.0.113.77", "curl/8.9.1", None, StatusCode::OK),
+            (
+                "/",
+                "203.0.113.77",
+                BROWSER,
+                Some("https://example.test/help"),
+                StatusCode::OK,
+            ),
+        ] {
+            assert_eq!(
+                visit(site(), path, address, agent, referer).await,
+                expected,
+                "{path}"
+            );
+        }
+        state.metrics.flush().await;
+
+        let since = hldr_core::api::Since::Days(1);
+        let pages: Vec<(String, u64, u64)> = state
+            .db
+            .page_metrics(since)
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|page| (page.route, page.views, page.visitors))
+            .collect();
+        assert_eq!(
+            pages,
+            [
+                ("/".to_owned(), 3, 1),
+                ("/help".to_owned(), 1, 1),
+                ("404".to_owned(), 1, 1)
+            ]
+        );
+        let daily = state.db.daily_metrics(since).await.unwrap();
+        assert_eq!(
+            daily.total,
+            hldr_core::api::Visits {
+                views: 4,
+                visitors: 2,
+                bots: 1
+            }
+        );
+        let referrers = state.db.referrer_metrics(since).await.unwrap();
+        assert_eq!(
+            referrers.items.len(),
+            1,
+            "the site's own links are not referrals"
+        );
+        assert_eq!(referrers.items[0].host, "news.example.org");
+        assert_eq!(referrers.items[0].views, 1);
+
+        // Nothing that identifies a visitor reaches the disk, in any table
+        // or in the log not yet checkpointed.
+        let mut stored = std::fs::read(dir.path().join("hldr.db")).unwrap();
+        if let Ok(wal) = std::fs::read(dir.path().join("hldr.db-wal")) {
+            stored.extend(wal);
+        }
+        let holds = |text: &str| {
+            stored
+                .windows(text.len())
+                .any(|window| window == text.as_bytes())
+        };
+        assert!(holds("news.example.org"), "the scan sees what is stored");
+        for secret in [
+            "203.0.113.77",
+            "198.51.100.23",
+            "PrivacyProbe",
+            "secret-thread",
+        ] {
+            assert!(!holds(secret), "{secret} is stored");
+        }
+    }
+
+    #[tokio::test]
+    async fn private_api_serves_metrics() {
+        let (_dir, state) = state().await;
+        visit(
+            site_router(state.clone()),
+            "/",
+            "203.0.113.77",
+            BROWSER,
+            None,
+        )
+        .await;
+        state.metrics.flush().await;
+        let api = || api::router(state.clone());
+
+        let (status, _, daily) = call(api(), "/api/v1/metrics/daily").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(daily["kind"], "DailyMetrics");
+        assert_eq!(daily["period"]["since"], "7d");
+        assert_eq!(daily["items"].as_array().unwrap().len(), 7);
+        assert_eq!(daily["total"]["views"], 1);
+        assert_eq!(daily["items"][6]["visitors"], 1);
+
+        let (status, _, pages) = call(api(), "/api/v1/metrics/pages?since=all").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(pages["items"][0]["route"], "/");
+        let (status, _, referrers) = call(api(), "/api/v1/metrics/referrers?since=30d").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(referrers["kind"], "ReferrerMetrics");
+
+        let (status, _, problem) = call(api(), "/api/v1/metrics/pages?since=1y").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(problem["detail"].as_str().unwrap().contains("not a period"));
+        let (status, _, _) = call(api(), "/api/v1/metrics/visitors").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

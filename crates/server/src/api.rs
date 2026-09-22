@@ -46,6 +46,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/events", get(events))
         .route("/api/v1/events/{name}", get(event))
         .route("/api/v1/server", get(server))
+        .route("/api/v1/metrics/{view}", get(metrics))
         .route("/api/v1/{resource}", get(list))
         .route("/api/v1/{resource}/{name}", get(item))
         .fallback(fallback)
@@ -224,6 +225,44 @@ async fn event(
     Ok(match found {
         Some(event) => Json(event).into_response(),
         None => not_found(format!("event '{name}' not found")),
+    })
+}
+
+#[derive(Deserialize)]
+struct MetricsQuery {
+    since: Option<String>,
+}
+
+/// `/api/v1/metrics/{daily,pages,referrers}[?since=7d|30d|all]`: what the
+/// site served, counted without tracking. The last minute may not have
+/// been flushed yet.
+async fn metrics(
+    State(state): State<AppState>,
+    Path(view): Path<String>,
+    query: Result<Query<MetricsQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let since = match query.map(|Query(query)| query.since) {
+        Ok(None) => api::Since::default(),
+        Ok(Some(since)) => match since.parse() {
+            Ok(since) => since,
+            Err(message) => return Ok(problem(StatusCode::BAD_REQUEST, "Bad Request", message)),
+        },
+        Err(rejection) => {
+            return Ok(problem(
+                StatusCode::BAD_REQUEST,
+                "Bad Request",
+                rejection.body_text(),
+            ));
+        }
+    };
+    let db = &state.db;
+    Ok(match view.as_str() {
+        "daily" => Json(db.daily_metrics(since).await?).into_response(),
+        "pages" => Json(db.page_metrics(since).await?).into_response(),
+        "referrers" => Json(db.referrer_metrics(since).await?).into_response(),
+        other => not_found(format!(
+            "no metrics named '{other}': daily, pages or referrers"
+        )),
     })
 }
 

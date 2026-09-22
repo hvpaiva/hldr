@@ -11,6 +11,7 @@ pub mod get;
 pub mod history;
 pub mod patch;
 pub mod sync;
+pub mod top;
 pub mod validate;
 pub mod version;
 #[cfg(test)]

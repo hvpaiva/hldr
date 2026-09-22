@@ -89,6 +89,20 @@ written after it, updates included. `GET /api/v1/server` reports the
 version, uptime, content state, database size and the GitHub rate limit
 as its last answer reported it. Both are private: the site serves neither.
 
+The site counts what it serves without tracking anyone: no cookie, no
+script, and no address or user agent stored. Each page answered and each
+404 (all in one `404` route) is counted per UTC day, with the referring
+host; a user agent that names itself a tool or crawler counts only as a
+bot. A visitor is a hash of the day's random salt, the client's address
+(the last `X-Forwarded-For` entry, which kamal-proxy writes) and its user
+agent. The first flush after a day ends counts that day's visitors and
+deletes its hashes and salt, so nobody can be followed across days, and
+visitors over a period are the sum of each day's. Counts are flushed every
+minute and on shutdown; both servers of a deploy can flush into the same
+database. `GET /api/v1/metrics/daily`, `/pages` and `/referrers`, with
+`?since=7d`, `30d` or `all`, are private too. Unlike content, metrics are
+not rebuilt from git: losing the database loses them.
+
 
 ```
 docker build -t hldr .
@@ -130,7 +144,14 @@ hldr explain project.metadata.status
 hldr version
 hldr get events --watch             # list, then print what happens
 hldr describe server                # uptime, content, database, GitHub quota, events
+hldr top                            # views, visitors and bots: the period, then per day
+hldr top pages --since 30d          # most viewed routes
+hldr top referrers --since all      # hosts that sent visitors
 ```
+
+`top` takes `--since` (7d by default; any number of days, or `all`),
+`--limit` (the most viewed pages or hosts, 20 by default, or the latest
+days) and `-o json|yaml`. The last minute of counts may not be flushed yet.
 
 `--watch` asks for what changed every two seconds and never pages; a
 server that stops answering, as during a deploy, is reported once and
