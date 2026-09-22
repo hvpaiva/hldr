@@ -1052,6 +1052,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_tree_marks_the_current_page() {
+        let (_dir, state) = state().await;
+        let (_, body) = page(site_router(state.clone()), "/projects/atlas", None).await;
+        assert!(body.contains(
+            r#"<div class="row cur"><span class="ic">·</span><a href="/projects/atlas""#
+        ));
+        let (_, body) = page(site_router(state.clone()), "/projects", None).await;
+        assert!(body.contains(r#"<summary class="row dir cur">"#));
+        assert!(!body.contains(r#"class="row" class="#));
+    }
+
+    #[tokio::test]
     async fn routes_answer_404_as_before() {
         let (_dir, state) = state().await;
         for (path, detail) in [

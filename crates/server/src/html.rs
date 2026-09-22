@@ -214,7 +214,7 @@ fn tree_value_link(model: &Model, context: &Value, path: &str, label: Option<&st
 
 fn tree_file(href: &str, label: &str, current: &str) -> Markup {
     html! {
-        div.row class=[(current == href).then_some("cur")] {
+        div.row.cur[current == href] {
             span.ic { "·" }
             a href=(href) data-file=(label) { (label) }
         }
@@ -237,7 +237,7 @@ fn tree_collection(model: &Model, name: &str, open_max: Option<usize>, current: 
     let kind = model.kind_of(collection);
     html! {
         details.dir data-fold=(name) open[open] {
-            summary.row.dir class=[(current == route).then_some("cur")] {
+            summary.row.dir.cur[current == route] {
                 a href=(route) { (name) "/" }
                 span.badge.off { (members.len()) }
             }
@@ -245,7 +245,7 @@ fn tree_collection(model: &Model, name: &str, open_max: Option<usize>, current: 
                 @for member in &members {
                     @let href = member.page.route().unwrap_or_default();
                     @let buffer = member.page.buffer();
-                    div.row class=[(current == href).then_some("cur")] {
+                    div.row.cur[current == href] {
                         span.ic { "·" }
                         a href=(href) data-file=(buffer) { (last_segment(&buffer)) }
                         @if let Some(badge) = badge(collection, kind, member) { span.badge { (badge) } }
