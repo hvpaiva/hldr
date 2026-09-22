@@ -264,6 +264,7 @@ pager: less -RF
 
 The pager starts with the first line of output, so a command that prints
 nothing starts none, and a token command asking to unlock runs before
+it. Errors and warnings wait for the pager to exit, so none lands inside
 it. `edit` is never paged.
 
 ## Test

@@ -207,14 +207,17 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // While a pager may run, stderr waits for it to exit, so nothing lands
+    // inside it or behind its screen.
+    if pager.is_some() {
+        term.hold();
+    }
     let mut out = BufWriter::new(Pager::new(pager, &term));
     let result = run(&cli, &env, &config, &term, &mut out);
-    // The pager exits before any error is printed, so the error stays on
-    // the screen.
-    let closed = out
-        .into_inner()
-        .map_err(io::IntoInnerError::into_error)
-        .and_then(Pager::finish);
+    let flushed = out.flush();
+    let (pager, _) = out.into_parts();
+    let closed = flushed.and(pager.finish());
+    term.release();
     let result = result.and_then(|ok| {
         closed?;
         Ok(ok)

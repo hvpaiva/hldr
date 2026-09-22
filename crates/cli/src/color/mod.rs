@@ -7,6 +7,8 @@ mod highlight;
 mod style;
 mod theme;
 
+use std::cell::RefCell;
+
 use anyhow::{Result, bail};
 
 pub use highlight::{json, yaml};
@@ -95,6 +97,8 @@ pub struct Term {
     theme: Theme,
     out: Option<Level>,
     err: Option<Level>,
+    /// Messages kept back while a pager has the terminal.
+    held: RefCell<Option<Vec<String>>>,
 }
 
 impl Term {
@@ -104,6 +108,7 @@ impl Term {
             theme: Theme::plain(),
             out: None,
             err: None,
+            held: RefCell::default(),
         }
     }
 
@@ -158,6 +163,7 @@ impl Term {
             theme,
             out: level(stdout_tty),
             err: level(stderr_tty),
+            held: RefCell::default(),
         })
     }
 
@@ -177,19 +183,38 @@ impl Term {
 
     /// `error: ...` on stderr, as kubectl words it.
     pub fn error(&self, message: &str) {
-        eprintln!(
-            "{}",
+        self.emit(
             self.err()
-                .paint(Role::StderrError, &format!("error: {message}"))
+                .paint(Role::StderrError, &format!("error: {message}")),
         );
     }
 
     pub fn warning(&self, message: &str) {
-        eprintln!(
-            "{}",
+        self.emit(
             self.err()
-                .paint(Role::StderrWarning, &format!("warning: {message}"))
+                .paint(Role::StderrWarning, &format!("warning: {message}")),
         );
+    }
+
+    /// Keeps stderr lines back until [`Term::release`]. A pager draws over
+    /// the terminal, so a line written meanwhile would land inside it, or,
+    /// written before it starts, be hidden behind its screen.
+    pub fn hold(&self) {
+        self.held.borrow_mut().get_or_insert_with(Vec::new);
+    }
+
+    /// Writes the lines kept back, in order, and stops keeping them.
+    pub fn release(&self) {
+        for line in self.held.borrow_mut().take().unwrap_or_default() {
+            eprintln!("{line}");
+        }
+    }
+
+    fn emit(&self, line: String) {
+        match self.held.borrow_mut().as_mut() {
+            Some(held) => held.push(line),
+            None => eprintln!("{line}"),
+        }
     }
 
     /// Has clap draw help, on stdout, and usage errors, on stderr, in the
@@ -373,6 +398,21 @@ mod tests {
         assert_eq!(term.out().paint(Role::DiffAdded, "+a"), "\x1b[32m+a\x1b[0m");
         assert_eq!(term.err().paint(Role::DiffAdded, "+a"), "+a");
         assert_eq!(term.out().paint(Role::DiffAdded, ""), "");
+    }
+
+    #[test]
+    fn holds_stderr_lines_until_released() {
+        let term = Term::plain();
+        term.hold();
+        term.error("one");
+        term.hold();
+        term.warning("two");
+        assert_eq!(
+            term.held.borrow().as_deref(),
+            Some(&["error: one", "warning: two"].map(str::to_owned)[..])
+        );
+        term.release();
+        assert!(term.held.borrow().is_none());
     }
 
     #[test]
