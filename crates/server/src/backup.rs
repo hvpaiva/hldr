@@ -45,6 +45,10 @@ pub struct Backup {
 
 #[derive(Default)]
 struct State {
+    /// Set once the repository answered with the token, which also tells
+    /// when the token expires; the tarball comes through a redirect whose
+    /// last answer does not say.
+    checked: bool,
     /// Set once the repository was restored, or needed no restore.
     restored: bool,
     failed_at: Option<Instant>,
@@ -121,6 +125,19 @@ impl Backup {
 
     async fn try_pass(&self) -> Result<(), Failure> {
         let failed = |reason| move |message: String| Failure(reason, message);
+        if !lock(&self.state).checked {
+            let repo = self.repo.clone();
+            if !blocking(move || repo.exists())
+                .await
+                .map_err(failed("BackupFailed"))?
+            {
+                return Err(Failure(
+                    "BackupFailed",
+                    format!("{} is missing, or the token cannot read it", self.repo.name),
+                ));
+            }
+            lock(&self.state).checked = true;
+        }
         if !lock(&self.state).restored {
             if !self
                 .db
@@ -462,7 +479,6 @@ mod tests {
         async fn serve(&self) -> String {
             let app = Router::new()
                 .route("/repos/o/metrics", get(|| async { "{}" }))
-                .route("/repos/o/metrics/tarball", get(tarball))
                 .route(
                     "/repos/o/metrics/contents/{*path}",
                     get(read_file).put(write_file),
@@ -476,6 +492,9 @@ mod tests {
                         response
                     },
                 ))
+                // As codeload answers at the end of GitHub's redirect: without
+                // the token's expiry.
+                .route("/repos/o/metrics/tarball", get(tarball))
                 .with_state(self.clone());
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
@@ -586,8 +605,21 @@ mod tests {
         let db = db(&dir, "one.db").await;
         let backup = Backup::new(&api, "o/metrics", "t".to_owned(), db.clone()).unwrap();
 
+        hub.files.lock().unwrap().insert(
+            "README.md".to_owned(),
+            ("blob-0".to_owned(), b"# metrics\n".to_vec()),
+        );
         backup.pass().await;
-        assert_eq!(hub.writes(), 0, "an empty repository restores nothing");
+        assert_eq!(
+            hub.writes(),
+            0,
+            "a repository without days restores nothing"
+        );
+        assert_eq!(
+            backup.state().await.unwrap().token_expires_at.as_deref(),
+            Some("2026-10-01T00:00:00Z"),
+            "known from the first pass, before any upload"
+        );
         closed_day(&db, "2020-01-01").await;
         closed_day(&db, "2020-01-02").await;
         backup.pass().await;
@@ -673,6 +705,22 @@ mod tests {
         backup.pass().await;
         assert_eq!(hub.writes(), 1);
         assert!(backup.state().await.unwrap().last_error.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_repository_the_token_cannot_read_is_reported_at_once() {
+        let api = Hub::default().serve().await;
+        let dir = tempfile::tempdir().unwrap();
+        let db = db(&dir, "one.db").await;
+        let backup = Backup::new(&api, "o/elsewhere", "t".to_owned(), db.clone()).unwrap();
+        backup.pass().await;
+        let error = backup.state().await.unwrap().last_error.unwrap();
+        assert_eq!(error, "o/elsewhere is missing, or the token cannot read it");
+        assert!(
+            reasons(&db)
+                .await
+                .contains(&("BackupFailed".to_owned(), error))
+        );
     }
 
     #[test]
