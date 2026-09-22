@@ -247,6 +247,25 @@ the `sync` keys color `committed`, `synced` and `not synced`, and
 `help.placeholder` a flag's `<VALUE>` in `--help`. Every other key means
 what it means in kubecolor.
 
+### Paging
+
+As in kubecolor, paging is opt-in. `--paging` (or `HLDR_PAGING=auto`, or
+`paging: auto` in the config file) sends output through a pager when
+stdout is a terminal; `--no-paging` turns it off for one run. The pager
+is `--pager` (or `HLDR_PAGER`), then `pager:` in the config file, then
+`PAGER`, then `less -RF` or `more` when they are on the `PATH`. Its
+command line is split on whitespace and run without a shell, and it
+must pass escapes through, as `less -R` does, to keep the colors:
+
+```yaml
+paging: auto
+pager: less -RF
+```
+
+The pager starts with the first line of output, so a command that prints
+nothing starts none, and a token command asking to unlock runs before
+it. `edit` is never paged.
+
 ## Test
 
 ```

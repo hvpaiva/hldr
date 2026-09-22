@@ -15,6 +15,7 @@ mod content;
 mod discovery;
 mod editor;
 mod github;
+mod pager;
 mod print;
 #[cfg(test)]
 mod stub;
@@ -23,6 +24,7 @@ use client::Client;
 use color::Term;
 use config::{Config, Env};
 use discovery::Catalog;
+use pager::Pager;
 
 #[derive(Parser)]
 #[command(
@@ -37,8 +39,46 @@ struct Cli {
     server: Option<String>,
     #[command(flatten)]
     color: ColorArgs,
+    /// Page output on a terminal: auto, or never, the default; overrides
+    /// `paging:` in the config file.
+    #[arg(
+        long,
+        global = true,
+        env = "HLDR_PAGING",
+        value_name = "MODE",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "auto"
+    )]
+    paging: Option<String>,
+    /// Do not page output; the same as --paging=never.
+    #[arg(long, global = true)]
+    no_paging: bool,
+    /// Pager command, such as "less -RF", run without a shell; overrides
+    /// `pager:` in the config file and PAGER.
+    #[arg(long, global = true, env = "HLDR_PAGER", value_name = "COMMAND")]
+    pager: Option<String>,
     #[command(subcommand)]
     command: Command,
+}
+
+impl Cli {
+    /// The pager, when paging is asked for and stdout is a terminal. `edit`
+    /// is never paged: the editor has the terminal.
+    fn pager(&self, env: &Env, config: &Config) -> Result<Option<Vec<String>>> {
+        let settings = pager::Settings {
+            no_paging: self.no_paging,
+            paging: self.paging.as_deref(),
+            config_paging: config.paging.as_deref(),
+            pager: self.pager.as_deref(),
+            config_pager: config.pager.as_deref(),
+            env_pager: env.pager.as_deref(),
+            path: env.path.as_deref(),
+        };
+        let command = settings.command()?;
+        let paged = io::stdout().is_terminal() && !matches!(self.command, Command::Edit(_));
+        Ok(command.filter(|_| paged))
+    }
 }
 
 #[derive(Parser, Default, Debug, PartialEq)]
@@ -157,18 +197,26 @@ fn main() -> ExitCode {
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
     let setup = config.and_then(|config| {
         let term = term(&cli.color.options(), Some(&config))?;
-        Ok((config, term))
+        let pager = cli.pager(&env, &config)?;
+        Ok((config, term, pager))
     });
-    let (config, term) = match setup {
+    let (config, term, pager) = match setup {
         Ok(setup) => setup,
         Err(err) => {
             eprintln!("error: {err:#}");
             return ExitCode::FAILURE;
         }
     };
-    let mut out = BufWriter::new(io::stdout().lock());
-    let result = run(&cli, &env, &config, &term, &mut out).and_then(|ok| {
-        out.flush()?;
+    let mut out = BufWriter::new(Pager::new(pager, &term));
+    let result = run(&cli, &env, &config, &term, &mut out);
+    // The pager exits before any error is printed, so the error stays on
+    // the screen.
+    let closed = out
+        .into_inner()
+        .map_err(io::IntoInnerError::into_error)
+        .and_then(Pager::finish);
+    let result = result.and_then(|ok| {
+        closed?;
         Ok(ok)
     });
     match result {

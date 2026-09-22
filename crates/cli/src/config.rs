@@ -1,6 +1,7 @@
 //! Where the CLI finds its server: the config file, the environment and the
 //! `--server` flag, in rising precedence.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -17,6 +18,10 @@ pub struct Config {
     pub content: Option<ContentConfig>,
     /// The color preset and theme, as kubecolor's `color.yaml` sets them.
     pub color: Option<ColorConfig>,
+    /// The pager's command line, over `PAGER`, such as `less -RF`.
+    pub pager: Option<String>,
+    /// `auto` pages output on a terminal; `never`, the default, does not.
+    pub paging: Option<String>,
 }
 
 /// How to write to the content repository the server reads.
@@ -42,6 +47,10 @@ pub struct Env {
     /// `HLDR_EDITOR`, `VISUAL` or `EDITOR`, in that order.
     pub editor: Option<String>,
     pub color: ColorEnv,
+    /// `PAGER`.
+    pub pager: Option<String>,
+    /// `PATH`, to find a pager when none is named.
+    pub path: Option<OsString>,
 }
 
 impl Env {
@@ -63,6 +72,8 @@ impl Env {
                 .iter()
                 .find_map(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty())),
             color: ColorEnv::from_process(),
+            pager: std::env::var("PAGER").ok(),
+            path: std::env::var_os("PATH"),
         }
     }
 
@@ -219,6 +230,11 @@ mod tests {
         .unwrap();
         let color = Config::load(Some(&path)).unwrap().color.unwrap();
         assert_eq!(color.preset.as_deref(), Some("protanopia"));
+
+        std::fs::write(&path, "pager: less -R\npaging: auto\n").unwrap();
+        let config = Config::load(Some(&path)).unwrap();
+        assert_eq!(config.pager.as_deref(), Some("less -R"));
+        assert_eq!(config.paging.as_deref(), Some("auto"));
         assert_eq!(color.theme.unwrap()["table"]["columns"][1], "green");
 
         std::fs::write(&path, "sever: https://api.example.test\n").unwrap();
