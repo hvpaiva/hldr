@@ -224,7 +224,7 @@ pub struct Source {
 }
 
 /// A table column, in the style of kubectl's printer columns.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Column {
     /// Header text.
     pub name: String,
@@ -232,6 +232,13 @@ pub struct Column {
     pub json_path: String,
     /// Shown only with `-o wide`.
     pub wide: bool,
+    /// For an enum field: the values it takes, which the CLI colors as a
+    /// status, those not in `ok` as a warning.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<String>,
+    /// For an enum field: the values drawn as good, as the site draws them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ok: Vec<String>,
 }
 
 const READ_VERBS: &[&str] = &["get", "describe", "explain"];
@@ -349,14 +356,19 @@ fn verbs(singleton: bool) -> Vec<String> {
     verbs
 }
 
+fn column(name: &str, json_path: &str, wide: bool) -> Column {
+    Column {
+        name: name.to_owned(),
+        json_path: json_path.to_owned(),
+        wide,
+        ..Column::default()
+    }
+}
+
 fn columns(columns: &[(&str, &str, bool)]) -> Vec<Column> {
     columns
         .iter()
-        .map(|&(name, json_path, wide)| Column {
-            name: name.to_owned(),
-            json_path: json_path.to_owned(),
-            wide,
-        })
+        .map(|&(name, json_path, wide)| column(name, json_path, wide))
         .collect()
 }
 
@@ -381,50 +393,35 @@ fn builtin(
 }
 
 /// A page type's resource. Its columns come from its fields: short scalars
-/// in the table, text and lists with `-o wide`.
+/// in the table, text and lists with `-o wide`. An enum's column carries
+/// its values, so the CLI colors them as the site does.
 fn page_type(page_type: &PageType<'_>) -> ApiResource {
     let names = &page_type.spec.names;
-    let mut printed = vec![Column {
-        name: "NAME".to_owned(),
-        json_path: ".metadata.name".to_owned(),
-        wide: false,
-    }];
-    let field = |name: &String, wide| Column {
-        name: name.to_uppercase(),
-        json_path: format!(".metadata.{name}"),
-        wide,
+    let mut printed = vec![column("NAME", ".metadata.name", false)];
+    let field = |name: &String, spec: &FieldSpec, wide| Column {
+        values: spec.values.clone(),
+        ok: spec.ok.clone(),
+        ..column(&name.to_uppercase(), &format!(".metadata.{name}"), wide)
     };
     for (name, spec) in &page_type.spec.fields {
         if matches!(
             spec.kind,
             FieldType::Enum | FieldType::Int | FieldType::Bool
         ) {
-            printed.push(field(name, false));
+            printed.push(field(name, spec, false));
         }
     }
-    printed.push(Column {
-        name: "DRAFT".to_owned(),
-        json_path: ".spec.draft".to_owned(),
-        wide: false,
-    });
-    printed.push(Column {
-        name: "TITLE".to_owned(),
-        json_path: ".metadata.title".to_owned(),
-        wide: true,
-    });
+    printed.push(column("DRAFT", ".spec.draft", false));
+    printed.push(column("TITLE", ".metadata.title", true));
     for (name, spec) in &page_type.spec.fields {
         if matches!(
             spec.kind,
             FieldType::String | FieldType::Url | FieldType::List
         ) {
-            printed.push(field(name, true));
+            printed.push(field(name, spec, true));
         }
     }
-    printed.push(Column {
-        name: "UPDATED".to_owned(),
-        json_path: ".metadata.updated_at".to_owned(),
-        wide: true,
-    });
+    printed.push(column("UPDATED", ".metadata.updated_at", true));
     ApiResource {
         name: names.plural.clone(),
         singular: names.singular.clone(),
@@ -817,6 +814,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn enum_columns_carry_their_values() {
+        let kind = project_kind();
+        let catalog = resources(&types(&kind));
+        let projects = catalog.items.iter().find(|r| r.name == "projects").unwrap();
+        let status = projects
+            .columns
+            .iter()
+            .find(|c| c.name == "STATUS")
+            .unwrap();
+        assert_eq!(status.values, ["active", "wip", "archived"]);
+        assert_eq!(status.ok, ["active"]);
+        let draft = projects.columns.iter().find(|c| c.name == "DRAFT").unwrap();
+        assert!(draft.values.is_empty() && draft.ok.is_empty());
+        let json = serde_json::to_value(draft).unwrap();
+        assert!(json.get("values").is_none() && json.get("ok").is_none());
     }
 
     #[test]

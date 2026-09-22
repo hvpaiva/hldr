@@ -182,7 +182,9 @@ templates without `range`) and `custom-columns=HEADER:PATH,...`.
 
 Output is colored as [kubecolor](https://github.com/kubecolor/kubecolor)
 colors kubectl's, with its presets, theme keys and color syntax. Tables
-color the header and cycle a color per column; `describe`, `explain` and
+color the header and cycle a color per column, and color an enum field's
+column as a status: its `ok` values as `status.success`, its other values
+as `status.warning`, as the site draws them; `describe`, `explain` and
 `version` color keys by depth; `-o json` and `-o yaml` color keys by depth
 and values by type; `diff` colors added and removed lines; `apply`,
 `patch` and `delete` color what happened, and every write its commit and

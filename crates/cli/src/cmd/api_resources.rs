@@ -49,7 +49,7 @@ pub fn run(
                 })
                 .collect();
             let headers = headers.into_iter().map(str::to_owned).collect();
-            print::table(out, term.out(), headers, rows, args.no_headers)?;
+            print::table(out, term.out(), headers, rows, &[], args.no_headers)?;
         }
         Output::Name => {
             for resource in resources {

@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
-use hldr_core::api::ApiResource;
+use hldr_core::api::{ApiResource, Column};
 use serde_json::{Value, json};
 
 use crate::color::{self, Painter, Role};
@@ -119,7 +119,7 @@ pub fn print(
                     })
                     .collect();
                 let headers = columns.iter().map(|column| column.name.clone()).collect();
-                table(out, paint, headers, rows, no_headers)?;
+                table(out, paint, headers, rows, &columns, no_headers)?;
             }
             Ok(())
         }
@@ -135,7 +135,7 @@ pub fn print(
                 })
                 .collect();
             let headers = columns.iter().map(|(header, _)| header.clone()).collect();
-            table(out, paint, headers, rows, no_headers)
+            table(out, paint, headers, rows, &[], no_headers)
         }
         Output::Name => {
             for group in groups {
@@ -193,12 +193,15 @@ fn cell(values: &[&Value]) -> String {
 
 /// Left-aligned columns three spaces apart, as kubectl prints them; colored
 /// as kubecolor colors them, the header in one style and each column in the
-/// next of `table.columns`, with `<none>` muted.
+/// next of `table.columns`, with `<none>` muted. A cell of an enum column in
+/// `specs`, by position, is a status: good when it is one of the column's
+/// `ok` values, a warning when it is another of its values.
 pub fn table(
     out: &mut dyn Write,
     paint: Painter<'_>,
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
+    specs: &[&Column],
     no_headers: bool,
 ) -> io::Result<()> {
     let mut lines = Vec::with_capacity(rows.len() + 1);
@@ -243,8 +246,14 @@ pub fn table(
             }
             colored.push_str(&text[at..start]);
             let cell = &text[start..end];
+            let spec = specs.get(i);
+            let is = |values: fn(&Column) -> &[String]| {
+                spec.is_some_and(|spec| values(spec).iter().any(|value| value == cell))
+            };
             colored.push_str(&match cell {
                 "<none>" => paint.paint(Role::DataNull, cell),
+                _ if is(|spec| &spec.ok) => paint.paint(Role::StatusSuccess, cell),
+                _ if is(|spec| &spec.values) => paint.paint(Role::StatusWarning, cell),
                 _ => paint.nth(Role::TableColumns, i, cell),
             });
             at = end;
@@ -307,13 +316,7 @@ mod tests {
     }
 
     fn colored(groups: &[Fetched], output: &str) -> String {
-        let options = color::Options {
-            force: Some("basic".to_owned()),
-            preset: Some("dark".to_owned()),
-            ..color::Options::default()
-        };
-        let term =
-            color::Term::new(&options, &color::ColorEnv::default(), None, false, false).unwrap();
+        let term = color::Term::basic();
         let mut out = Vec::new();
         print(
             &mut out,
@@ -340,18 +343,7 @@ mod tests {
 
     #[test]
     fn colored_tables_skip_empty_cells() {
-        let term = color::Term::new(
-            &color::Options {
-                force: Some("basic".to_owned()),
-                preset: Some("dark".to_owned()),
-                ..color::Options::default()
-            },
-            &color::ColorEnv::default(),
-            None,
-            false,
-            false,
-        )
-        .unwrap();
+        let term = color::Term::basic();
         let mut out = Vec::new();
         let row = |cells: &[&str]| cells.iter().map(|c| (*c).to_owned()).collect();
         table(
@@ -359,12 +351,38 @@ mod tests {
             term.out(),
             row(&["A", "B", "C"]),
             vec![row(&["x", "", "z"]), row(&["y", "w", ""])],
+            &[],
             true,
         )
         .unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "\x1b[37mx\x1b[0m       \x1b[37mz\x1b[0m\n\x1b[37my\x1b[0m   \x1b[36mw\x1b[0m\n"
+        );
+    }
+
+    #[test]
+    fn enum_columns_color_as_statuses() {
+        let mut resource = projects();
+        resource.columns[1] = serde_json::from_value(json!({
+            "name": "STATUS", "json_path": ".spec.status", "wide": false,
+            "values": ["active", "wip"], "ok": ["active"],
+        }))
+        .unwrap();
+        let group = Fetched {
+            resource,
+            value: json!({"kind": "ProjectList", "items": [
+                {"metadata": {"name": "a"}, "spec": {"status": "active"}},
+                {"metadata": {"name": "b"}, "spec": {"status": "wip"}},
+                {"metadata": {"name": "c"}, "spec": {"status": "other"}},
+            ]}),
+        };
+        assert_eq!(
+            colored(&[group], "table"),
+            "\x1b[1mNAME   STATUS\x1b[0m\n\
+             \x1b[37ma\x1b[0m      \x1b[32mactive\x1b[0m\n\
+             \x1b[37mb\x1b[0m      \x1b[33mwip\x1b[0m\n\
+             \x1b[37mc\x1b[0m      \x1b[36mother\x1b[0m\n"
         );
     }
 
