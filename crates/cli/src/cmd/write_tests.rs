@@ -9,6 +9,7 @@ use clap::Parser;
 
 use crate::client::Client;
 use crate::cmd::Writer;
+use crate::color::Term;
 use crate::discovery::Catalog;
 use crate::stub::hub::{self, Repo, Shared};
 
@@ -97,11 +98,12 @@ fn run_with(
     let parsed = Test::try_parse_from(std::iter::once("hldr").chain(args.iter().copied())).unwrap();
     let mut out = Vec::new();
     let mut writer = world.writer(token, editor);
+    let term = Term::plain();
     let result = match &parsed.command {
-        Command::Apply(a) => super::apply::run(&mut out, &mut writer, a),
-        Command::Diff(a) => super::diff::run(&mut out, &mut writer, a),
-        Command::Patch(a) => super::patch::run(&mut out, &mut writer, a),
-        Command::Delete(a) => super::delete::run(&mut out, &mut writer, a),
+        Command::Apply(a) => super::apply::run(&mut out, &term, &mut writer, a),
+        Command::Diff(a) => super::diff::run(&mut out, &term, &mut writer, a),
+        Command::Patch(a) => super::patch::run(&mut out, &term, &mut writer, a),
+        Command::Delete(a) => super::delete::run(&mut out, &term, &mut writer, a),
         Command::Edit(a) => super::edit::run(&mut out, &mut writer, a),
     };
     (result, String::from_utf8(out).unwrap())

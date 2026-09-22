@@ -139,7 +139,8 @@ hldr sync                           # fetch now instead of on the next poll
 hldr sync status                    # served revision against the branch head
 ```
 
-`hldr validate -f PATH` needs no server, config or network: it checks
+`hldr validate -f PATH` needs no server or network, and reads the config
+file only for colors: it checks
 files with the parser the server indexes with and, for a directory, the
 checks across files too: the singletons and the pages the site needs
 exist, page types and collections pair up, names do not clash, and every
@@ -176,6 +177,69 @@ hours, and refreshed when the server runs another version or serves another
 content revision, and at once for a type the cache does not know. `-o`
 takes `table`, `wide`, `json`, `yaml`, `name`, `jsonpath=TEMPLATE` (kubectl
 templates without `range`) and `custom-columns=HEADER:PATH,...`.
+
+### Colors
+
+Output is colored as [kubecolor](https://github.com/kubecolor/kubecolor)
+colors kubectl's, with its presets, theme keys and color syntax. Tables
+color the header and cycle a color per column; `describe`, `explain` and
+`version` color keys by depth; `-o json` and `-o yaml` color keys by depth
+and values by type; `diff` colors added and removed lines; `apply`,
+`patch` and `delete` color what happened; errors and warnings go red and
+yellow. Uncolored output is byte for byte what it was before.
+
+Each stream is colored only when it is a terminal, so pipes and
+redirected files stay plain. `--plain` or `NO_COLOR` turns colors off;
+`--force-colors[=LEVEL]` (or `HLDR_FORCE_COLORS`, or `FORCE_COLOR`)
+colors anyway, with `auto`, `basic`, `256` or `truecolor` colors, and
+`none` never colors. A color the terminal cannot show is drawn as the
+nearest one it can: `COLORTERM=truecolor` gives 24-bit, a `TERM` with
+`256color` gives 256, anything else the 16 basic ones.
+
+The preset comes from `--color-preset`, `HLDR_COLOR_PRESET` or
+`color.preset`: `auto` (the default), `dark`, `light`, `none`, or
+`protanopia`, `deuteranopia` or `tritanopia`, alone or with `-dark` or
+`-light`. `auto` picks light when `COLORFGBG` says the background is
+light, dark otherwise; `--light-background` (or `HLDR_LIGHT_BACKGROUND`)
+takes the light variant of any preset. `color.theme` sets any key over
+the preset:
+
+```yaml
+color:
+  preset: dark
+  theme:
+    base:
+      danger: fg=white:bg=red:bold
+    table:
+      columns: [cyan, "#6afd6a", 208]
+```
+
+`HLDR_COLOR_THEME_BASE_DANGER=red` sets a key from the environment. A
+color is `:`-separated fields: a name (`red`, `hicyan`, `gray`), an
+attribute (`bold`, `italic`, `underline`...), `fg=` or `bg=`, a 256-color
+code, `#rrggbb` or `rgb(r, g, b)`; `none` is no styling. List keys take
+several, as a YAML list or split by `/`.
+
+An unset key takes the value of the key it falls back to, so setting a
+`base` key recolors everything built on it:
+
+| Key | Falls back to |
+| --- | --- |
+| `base.info`, `base.primary`, `base.secondary`, `base.success`, `base.warning`, `base.danger`, `base.muted` | the preset |
+| `base.key` (list) | `base.secondary` |
+| `data.key` (list), `describe.key`, `explain.key`, `version.key` | `base.key` |
+| `data.string` | `base.info` |
+| `data.true`, `status.success`, `diff.added`, `apply.created` | `base.success` |
+| `data.false`, `status.error`, `stderr.error`, `explain.required`, `diff.removed`, `delete.deleted` | `base.danger` |
+| `data.number`, `apply.unchanged` | `base.primary` |
+| `data.null`, `diff.unchanged` | `base.muted` |
+| `status.warning`, `stderr.warning`, `apply.configured`, `patch.patched` | `base.warning` |
+| `table.header` | `base.info` |
+| `table.columns` (list) | `base.info`, `base.secondary` |
+| `apply.dryrun` | `base.secondary` |
+
+`stderr.warning` is hldr's own; every other key means what it means in
+kubecolor.
 
 ## Test
 

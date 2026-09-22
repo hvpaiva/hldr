@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::client::Client;
+use crate::color::{self, Painter, Role, Term};
 
 #[derive(Debug, clap::Args)]
 pub struct Args {
@@ -15,7 +16,7 @@ pub struct Args {
     output: Option<String>,
 }
 
-pub fn run(out: &mut dyn Write, client: Option<&Client>, args: &Args) -> Result<bool> {
+pub fn run(out: &mut dyn Write, term: &Term, client: Option<&Client>, args: &Args) -> Result<bool> {
     let mut report = json!({
         "client": {"version": hldr_core::VERSION, "revision": hldr_core::REVISION},
     });
@@ -34,13 +35,21 @@ pub fn run(out: &mut dyn Write, client: Option<&Client>, args: &Args) -> Result<
             "last_error": sync["last_error"],
         });
         if let Some(warning) = skew(hldr_core::VERSION, health["version"].as_str()) {
-            eprintln!("warning: {warning}");
+            term.warning(&warning);
         }
     }
+    let paint = term.out();
     match args.output.as_deref() {
-        None => write!(out, "{}", text(&report))?,
-        Some("json") => writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?,
-        Some("yaml") => write!(out, "{}", serde_saphyr::to_string(&report)?)?,
+        None => write!(out, "{}", text(paint, &report))?,
+        Some("json") => {
+            let text = serde_json::to_string_pretty(&report)?;
+            writeln!(out, "{}", color::json(paint, &text))?;
+        }
+        Some("yaml") => write!(
+            out,
+            "{}",
+            color::yaml(paint, &serde_saphyr::to_string(&report)?)
+        )?,
         Some(other) => bail!("unknown output {other:?}: use json or yaml"),
     }
     Ok(true)
@@ -64,16 +73,19 @@ fn skew(client: &str, server: Option<&str>) -> Option<String> {
     })
 }
 
-fn text(report: &Value) -> String {
-    let field = |value: &Value| value.as_str().unwrap_or("<none>").to_owned();
+fn text(paint: Painter<'_>, report: &Value) -> String {
+    let field = |value: &Value| paint.value(value.as_str().unwrap_or("<none>"));
+    let key = |name: &str| paint.nth(Role::VersionKey, 0, name);
     let mut out = format!(
-        "Client Version: {} ({})\n",
+        "{}: {} ({})\n",
+        key("Client Version"),
         field(&report["client"]["version"]),
         field(&report["client"]["revision"])
     );
     if report["server"].is_object() {
         out.push_str(&format!(
-            "Server Version: {} ({}) at {}\n",
+            "{}: {} ({}) at {}\n",
+            key("Server Version"),
             field(&report["server"]["version"]),
             field(&report["server"]["revision"]),
             field(&report["server"]["url"])
@@ -83,13 +95,19 @@ fn text(report: &Value) -> String {
             .as_str()
             .map_or_else(|| "<none>".to_owned(), |r| r.chars().take(12).collect());
         out.push_str(&format!(
-            "Content:        {revision} from {}, synced {}\n",
+            "{}:        {} from {}, synced {}\n",
+            key("Content"),
+            paint.value(&revision),
             field(&content["source"]),
             field(&content["synced_at"])
         ));
         if let Some(error) = content["last_error"].as_str() {
             let first = error.lines().next().unwrap_or(error);
-            out.push_str(&format!("Last sync failed: {first}\n"));
+            out.push_str(&format!(
+                "{}: {}\n",
+                key("Last sync failed"),
+                paint.paint(Role::StatusError, first)
+            ));
         }
     }
     out
@@ -123,7 +141,7 @@ mod tests {
             },
         });
         assert_eq!(
-            text(&report),
+            text(Term::plain().out(), &report),
             "Client Version: dev (unknown)\n\
              Server Version: 3.2.0 (abc) at http://x\n\
              Content:        20592fd6ffe2 from github.com/o/r@main, synced 2026-09-21T19:21:25Z\n\

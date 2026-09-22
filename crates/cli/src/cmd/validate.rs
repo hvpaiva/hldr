@@ -1,5 +1,5 @@
 //! Offline checks, with the parser and the tree checks the server indexes
-//! with: no server, no config, no network.
+//! with: no server, no network, and the config file only for colors.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use hldr_core::manifest::{self, Kind, Manifest, Registry};
 use hldr_core::tree::{self, Tree};
+
+use crate::color::{Role, Term};
 
 #[derive(Debug, clap::Args)]
 pub struct Args {
@@ -20,7 +22,7 @@ pub struct Args {
 /// too. A manifest inside a checkout is checked where it sits, against the
 /// page types the checkout declares; one on its own goes where its declared
 /// kind and its file name say.
-pub fn run(out: &mut dyn Write, args: &Args) -> Result<bool> {
+pub fn run(out: &mut dyn Write, term: &Term, args: &Args) -> Result<bool> {
     let mut valid = true;
     for arg in &args.files {
         let tree = arg.is_dir();
@@ -32,7 +34,13 @@ pub fn run(out: &mut dyn Write, args: &Args) -> Result<bool> {
         match checked {
             Ok(count) => {
                 let files = if count == 1 { "file" } else { "files" };
-                writeln!(out, "{}: {count} {files} valid", arg.display())?;
+                writeln!(
+                    out,
+                    "{}: {}",
+                    arg.display(),
+                    term.out()
+                        .paint(Role::StatusSuccess, &format!("{count} {files} valid"))
+                )?;
             }
             Err(err) => {
                 valid = false;
@@ -40,9 +48,9 @@ pub fn run(out: &mut dyn Write, args: &Args) -> Result<bool> {
                 let root = arg.display().to_string();
                 for problem in err.problems() {
                     if tree {
-                        eprintln!("error: {}/{problem}", root.trim_end_matches('/'));
+                        term.error(&format!("{}/{problem}", root.trim_end_matches('/')));
                     } else {
-                        eprintln!("error: {problem}");
+                        term.error(&problem.to_string());
                     }
                 }
             }
@@ -168,6 +176,7 @@ mod tests {
         let mut out = Vec::new();
         let valid = run(
             &mut out,
+            &Term::plain(),
             &Args {
                 files: paths.to_vec(),
             },

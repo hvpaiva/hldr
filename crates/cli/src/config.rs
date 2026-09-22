@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use crate::color::{ColorConfig, ColorEnv};
+
 /// `$XDG_CONFIG_HOME/hldr/config.yaml`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -13,6 +15,8 @@ pub struct Config {
     /// Base URL of the private API, such as `https://apollo.<tailnet>.ts.net:8443`.
     pub server: Option<String>,
     pub content: Option<ContentConfig>,
+    /// The color preset and theme, as kubecolor's `color.yaml` sets them.
+    pub color: Option<ColorConfig>,
 }
 
 /// How to write to the content repository the server reads.
@@ -37,6 +41,7 @@ pub struct Env {
     pub github_token: Option<String>,
     /// `HLDR_EDITOR`, `VISUAL` or `EDITOR`, in that order.
     pub editor: Option<String>,
+    pub color: ColorEnv,
 }
 
 impl Env {
@@ -57,6 +62,7 @@ impl Env {
             editor: ["HLDR_EDITOR", "VISUAL", "EDITOR"]
                 .iter()
                 .find_map(|name| std::env::var(name).ok().filter(|v| !v.trim().is_empty())),
+            color: ColorEnv::from_process(),
         }
     }
 
@@ -206,6 +212,15 @@ mod tests {
         let config = Config::load(Some(&path)).unwrap();
         assert_eq!(config.server.as_deref(), Some("https://api.example.test"));
 
+        std::fs::write(
+            &path,
+            "color:\n  preset: protanopia\n  theme:\n    base:\n      danger: fg=white:bg=red\n    table:\n      columns: [cyan, green]\n",
+        )
+        .unwrap();
+        let color = Config::load(Some(&path)).unwrap().color.unwrap();
+        assert_eq!(color.preset.as_deref(), Some("protanopia"));
+        assert_eq!(color.theme.unwrap()["table"]["columns"][1], "green");
+
         std::fs::write(&path, "sever: https://api.example.test\n").unwrap();
         let err = Config::load(Some(&path)).unwrap_err();
         assert!(format!("{err:#}").contains("config.yaml"), "{err:#}");
@@ -215,7 +230,7 @@ mod tests {
     fn flag_wins_over_config() {
         let config = Config {
             server: Some("https://from-file.test".to_owned()),
-            content: None,
+            ..Config::default()
         };
         assert_eq!(
             server(None, &config, None).unwrap(),
@@ -230,10 +245,10 @@ mod tests {
     #[test]
     fn token_comes_from_env_or_command() {
         let command = |argv: &[&str]| Config {
-            server: None,
             content: Some(ContentConfig {
                 token_command: Some(argv.iter().map(|a| (*a).to_owned()).collect()),
             }),
+            ..Config::default()
         };
         assert_eq!(
             github_token(&Env::default(), &Config::default()).unwrap(),

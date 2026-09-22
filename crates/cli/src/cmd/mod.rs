@@ -21,6 +21,7 @@ use hldr_core::manifest::Registry;
 use serde_json::json;
 
 use crate::client::Client;
+use crate::color::Term;
 use crate::content::{self, Target};
 use crate::discovery::Catalog;
 use crate::print::Fetched;
@@ -139,6 +140,7 @@ pub fn requests(targets: &[String]) -> Result<Vec<(String, Vec<String>)>> {
 /// makes the command fail at the end, as kubectl does, without hiding the
 /// resources that were found.
 pub fn fetch(
+    term: &Term,
     client: &Client,
     catalog: &mut Catalog<'_>,
     targets: &[String],
@@ -171,7 +173,7 @@ pub fn fetch(
             match client.get_optional(&format!("{collection}/{name}"))? {
                 Some(item) => items.push(item),
                 None => {
-                    eprintln!("error: {} {name:?} not found", resource.singular);
+                    term.error(&format!("{} {name:?} not found", resource.singular));
                     complete = false;
                 }
             }

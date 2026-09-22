@@ -3,6 +3,7 @@ use std::io::Write;
 use anyhow::{Result, bail};
 use serde_json::json;
 
+use crate::color::{self, Term};
 use crate::discovery::Catalog;
 use crate::print::{self, Output};
 
@@ -17,7 +18,12 @@ pub struct Args {
 }
 
 /// Always asks the server, and refreshes the cache with the answer.
-pub fn run(out: &mut dyn Write, catalog: &mut Catalog<'_>, args: &Args) -> Result<bool> {
+pub fn run(
+    out: &mut dyn Write,
+    term: &Term,
+    catalog: &mut Catalog<'_>,
+    args: &Args,
+) -> Result<bool> {
     let output: Output = args.output.parse()?;
     let resources = &catalog.refresh()?.resources;
     match output {
@@ -43,7 +49,7 @@ pub fn run(out: &mut dyn Write, catalog: &mut Catalog<'_>, args: &Args) -> Resul
                 })
                 .collect();
             let headers = headers.into_iter().map(str::to_owned).collect();
-            print::table(out, headers, rows, args.no_headers)?;
+            print::table(out, term.out(), headers, rows, args.no_headers)?;
         }
         Output::Name => {
             for resource in resources {
@@ -52,11 +58,13 @@ pub fn run(out: &mut dyn Write, catalog: &mut Catalog<'_>, args: &Args) -> Resul
         }
         Output::Json => {
             let list = json!({"kind": "APIResourceList", "items": resources});
-            writeln!(out, "{}", serde_json::to_string_pretty(&list)?)?;
+            let text = serde_json::to_string_pretty(&list)?;
+            writeln!(out, "{}", color::json(term.out(), &text))?;
         }
         Output::Yaml => {
             let list = json!({"kind": "APIResourceList", "items": resources});
-            write!(out, "{}", serde_saphyr::to_string(&list)?)?;
+            let text = serde_saphyr::to_string(&list)?;
+            write!(out, "{}", color::yaml(term.out(), &text))?;
         }
         Output::JsonPath(_) | Output::CustomColumns(_) => {
             bail!("api-resources prints table, wide, json, yaml or name");

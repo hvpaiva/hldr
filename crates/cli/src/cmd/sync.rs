@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::client::Client;
+use crate::color::{self, Painter, Role, Term};
 use crate::content::{self, Target};
 use crate::discovery::Catalog;
 
@@ -27,6 +28,7 @@ enum Command {
 /// poll; `hldr sync status` compares what it serves with the branch.
 pub fn run(
     out: &mut dyn Write,
+    term: &Term,
     client: &Client,
     catalog: &mut Catalog<'_>,
     api: &str,
@@ -48,10 +50,18 @@ pub fn run(
                 Some(Target::discover(client, api, token()?)?.head()?)
             };
             status["branch_head"] = head.clone().map_or(Value::Null, Value::String);
+            let paint = term.out();
             match output.as_deref() {
-                None => write!(out, "{}", text(&status))?,
-                Some("json") => writeln!(out, "{}", serde_json::to_string_pretty(&status)?)?,
-                Some("yaml") => write!(out, "{}", serde_saphyr::to_string(&status)?)?,
+                None => write!(out, "{}", text(paint, &status))?,
+                Some("json") => {
+                    let text = serde_json::to_string_pretty(&status)?;
+                    writeln!(out, "{}", color::json(paint, &text))?;
+                }
+                Some("yaml") => write!(
+                    out,
+                    "{}",
+                    color::yaml(paint, &serde_saphyr::to_string(&status)?)
+                )?,
                 Some(other) => bail!("unknown output {other:?}: use json or yaml"),
             }
             Ok(true)
@@ -59,30 +69,42 @@ pub fn run(
     }
 }
 
-fn text(status: &Value) -> String {
-    let field = |key: &str| status[key].as_str().unwrap_or("<none>").to_owned();
+/// Laid out as `describe` lays out a resource, the state colored as a
+/// status is.
+fn text(paint: Painter<'_>, status: &Value) -> String {
+    let raw = |key: &str| status[key].as_str().unwrap_or("<none>").to_owned();
+    let field = |key: &str| paint.value(&raw(key));
+    let label = |name: &str| paint.nth(Role::DescribeKey, 0, name);
     let served = status["revision"].as_str();
     let head = status["branch_head"].as_str();
     let state = match (served, head) {
-        (Some(served), Some(head)) if served == head => "Synced".to_owned(),
+        (Some(served), Some(head)) if served == head => paint.paint(Role::StatusSuccess, "Synced"),
         (_, Some(head)) => format!(
-            "OutOfSync: {} is at {}; `hldr sync` brings the site there",
-            field("branch"),
+            "{}: {} is at {}; `hldr sync` brings the site there",
+            paint.paint(Role::StatusWarning, "OutOfSync"),
+            raw("branch"),
             content::short(head)
         ),
-        (_, None) => "Unknown: content comes from a directory".to_owned(),
+        (_, None) => format!(
+            "{}: content comes from a directory",
+            paint.paint(Role::StatusWarning, "Unknown")
+        ),
     };
     let mut out = format!(
-        "Source:      {}\nServed:      {} (synced {})\nState:       {state}\nLast Try:    {}\n",
+        "{}:      {}\n{}:      {} (synced {})\n{}:       {state}\n{}:    {}\n",
+        label("Source"),
         field("source"),
-        served.map_or("<none>", content::short),
+        label("Served"),
+        paint.value(served.map_or("<none>", content::short)),
         field("synced_at"),
+        label("State"),
+        label("Last Try"),
         field("last_attempt_at"),
     );
     if let Some(error) = status["last_error"].as_str() {
-        out.push_str("Last Error:\n");
+        out.push_str(&format!("{}:\n", label("Last Error")));
         for line in error.lines() {
-            out.push_str(&format!("    {line}\n"));
+            out.push_str(&format!("    {}\n", paint.paint(Role::StatusError, line)));
         }
     }
     out
@@ -100,17 +122,20 @@ mod tests {
             "last_error": null, "branch_head": "a".repeat(40),
         });
         assert!(
-            text(&status).contains("State:       Synced\n"),
+            text(Term::plain().out(), &status).contains("State:       Synced\n"),
             "{}",
-            text(&status)
+            text(Term::plain().out(), &status)
         );
         status["branch_head"] = json!("b".repeat(40));
         assert!(
-            text(&status).contains("OutOfSync: main is at bbbbbbbbbbbb"),
+            text(Term::plain().out(), &status).contains("OutOfSync: main is at bbbbbbbbbbbb"),
             "{}",
-            text(&status)
+            text(Term::plain().out(), &status)
         );
         status["last_error"] = json!("index: site.yaml: bad\n  detail");
-        assert!(text(&status).ends_with("Last Error:\n    index: site.yaml: bad\n      detail\n"));
+        assert!(
+            text(Term::plain().out(), &status)
+                .ends_with("Last Error:\n    index: site.yaml: bad\n      detail\n")
+        );
     }
 }

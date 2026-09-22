@@ -3,6 +3,7 @@ use std::io::Write;
 use anyhow::{Result, bail};
 
 use crate::cmd::Writer;
+use crate::color::{Role, Term};
 use crate::content::{self, Publish};
 use crate::github::Change;
 
@@ -21,7 +22,7 @@ pub struct Args {
 /// Removes the resources' files in one commit, a page's markdown with its
 /// manifest; git keeps them in history. A missing name is reported and the
 /// others are still deleted.
-pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<bool> {
+pub fn run(out: &mut dyn Write, term: &Term, writer: &mut Writer<'_>, args: &Args) -> Result<bool> {
     writer.authorize()?;
     let resource = writer.resource(&args.kind, "delete")?;
     if resource.singleton {
@@ -34,7 +35,7 @@ pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<
     for name in &args.names {
         let path = content::path_for(&resource, Some(name))?;
         let Some(text) = writer.target.github.file(&head, &path)? else {
-            eprintln!("error: {} {name:?} not found", resource.singular);
+            term.error(&format!("{} {name:?} not found", resource.singular));
             complete = false;
             continue;
         };
@@ -66,7 +67,11 @@ pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<
     }
     .run(out, &changes)?;
     for label in &labels {
-        writeln!(out, "{label} deleted")?;
+        writeln!(
+            out,
+            "{label} {}",
+            term.out().paint(Role::DeleteDeleted, "deleted")
+        )?;
     }
     Ok(complete)
 }

@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use hldr_core::api::ApiResource;
 use serde_json::{Value, json};
 
+use crate::color::{self, Painter, Role};
 use jsonpath::{Path, Template, plain};
 
 #[derive(Debug)]
@@ -82,6 +83,7 @@ pub fn items(value: &Value) -> Vec<&Value> {
 
 pub fn print(
     out: &mut dyn Write,
+    paint: Painter<'_>,
     groups: &[Fetched],
     output: &Output,
     no_headers: bool,
@@ -117,7 +119,7 @@ pub fn print(
                     })
                     .collect();
                 let headers = columns.iter().map(|column| column.name.clone()).collect();
-                table(out, headers, rows, no_headers)?;
+                table(out, paint, headers, rows, no_headers)?;
             }
             Ok(())
         }
@@ -133,7 +135,7 @@ pub fn print(
                 })
                 .collect();
             let headers = columns.iter().map(|(header, _)| header.clone()).collect();
-            table(out, headers, rows, no_headers)
+            table(out, paint, headers, rows, no_headers)
         }
         Output::Name => {
             for group in groups {
@@ -145,19 +147,13 @@ pub fn print(
         }
         Output::Json => {
             let value = combined(groups);
-            writeln!(
-                out,
-                "{}",
-                serde_json::to_string_pretty(&value).map_err(io::Error::other)?
-            )
+            let text = serde_json::to_string_pretty(&value).map_err(io::Error::other)?;
+            writeln!(out, "{}", color::json(paint, &text))
         }
         Output::Yaml => {
             let value = combined(groups);
-            write!(
-                out,
-                "{}",
-                serde_saphyr::to_string(&value).map_err(io::Error::other)?
-            )
+            let text = serde_saphyr::to_string(&value).map_err(io::Error::other)?;
+            write!(out, "{}", color::yaml(paint, &text))
         }
         Output::JsonPath(template) => write!(out, "{}", template.render(&combined(groups))),
     }
@@ -195,9 +191,12 @@ fn cell(values: &[&Value]) -> String {
     text.lines().next().unwrap_or_default().to_owned()
 }
 
-/// Left-aligned columns three spaces apart, as kubectl prints them.
+/// Left-aligned columns three spaces apart, as kubectl prints them; colored
+/// as kubecolor colors them, the header in one style and each column in the
+/// next of `table.columns`, with `<none>` muted.
 pub fn table(
     out: &mut dyn Write,
+    paint: Painter<'_>,
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
     no_headers: bool,
@@ -218,16 +217,40 @@ pub fn table(
                 .unwrap_or(0)
         })
         .collect();
-    for line in &lines {
+    for (n, line) in lines.iter().enumerate() {
         let mut text = String::new();
+        // Where each cell's text starts and ends in `text`.
+        let mut cells = Vec::with_capacity(line.len());
         for (i, cell) in line.iter().enumerate() {
+            cells.push((text.len(), text.len() + cell.len()));
             if i + 1 < line.len() {
                 text.push_str(&format!("{cell:<width$}   ", width = widths[i]));
             } else {
                 text.push_str(cell);
             }
         }
-        writeln!(out, "{}", text.trim_end())?;
+        let text = text.trim_end();
+        if n == 0 && !no_headers {
+            writeln!(out, "{}", paint.paint(Role::TableHeader, text))?;
+            continue;
+        }
+        let mut colored = String::with_capacity(text.len() * 2);
+        let mut at = 0;
+        for (i, (start, end)) in cells.into_iter().enumerate() {
+            let end = end.min(text.len());
+            if start >= end {
+                continue;
+            }
+            colored.push_str(&text[at..start]);
+            let cell = &text[start..end];
+            colored.push_str(&match cell {
+                "<none>" => paint.paint(Role::DataNull, cell),
+                _ => paint.nth(Role::TableColumns, i, cell),
+            });
+            at = end;
+        }
+        colored.push_str(&text[at..]);
+        writeln!(out, "{colored}")?;
     }
     Ok(())
 }
@@ -271,8 +294,78 @@ mod tests {
 
     fn printed(groups: &[Fetched], output: &str, no_headers: bool) -> String {
         let mut out = Vec::new();
-        print(&mut out, groups, &output.parse().unwrap(), no_headers).unwrap();
+        let term = color::Term::plain();
+        print(
+            &mut out,
+            term.out(),
+            groups,
+            &output.parse().unwrap(),
+            no_headers,
+        )
+        .unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    fn colored(groups: &[Fetched], output: &str) -> String {
+        let options = color::Options {
+            force: Some("basic".to_owned()),
+            preset: Some("dark".to_owned()),
+            ..color::Options::default()
+        };
+        let term =
+            color::Term::new(&options, &color::ColorEnv::default(), None, false, false).unwrap();
+        let mut out = Vec::new();
+        print(
+            &mut out,
+            term.out(),
+            groups,
+            &output.parse().unwrap(),
+            false,
+        )
+        .unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn colored_tables_keep_their_alignment() {
+        assert_eq!(
+            colored(&[fetched()], "table"),
+            "\x1b[1mNAME                 HIGHLIGHT\x1b[0m\n\
+             \x1b[37matlas\x1b[0m                \x1b[36m1\x1b[0m\n\
+             \x1b[37ma-much-longer-name\x1b[0m   \x1b[90;3m<none>\x1b[0m\n"
+        );
+        let json = colored(&[fetched()], "json");
+        assert!(json.contains("\x1b[96m\"kind\"\x1b[0m"), "{json}");
+    }
+
+    #[test]
+    fn colored_tables_skip_empty_cells() {
+        let term = color::Term::new(
+            &color::Options {
+                force: Some("basic".to_owned()),
+                preset: Some("dark".to_owned()),
+                ..color::Options::default()
+            },
+            &color::ColorEnv::default(),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        let row = |cells: &[&str]| cells.iter().map(|c| (*c).to_owned()).collect();
+        table(
+            &mut out,
+            term.out(),
+            row(&["A", "B", "C"]),
+            vec![row(&["x", "", "z"]), row(&["y", "w", ""])],
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "\x1b[37mx\x1b[0m       \x1b[37mz\x1b[0m\n\x1b[37my\x1b[0m   \x1b[36mw\x1b[0m\n"
+        );
     }
 
     #[test]

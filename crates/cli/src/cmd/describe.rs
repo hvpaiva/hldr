@@ -7,6 +7,7 @@ use anyhow::Result;
 use serde_json::{Map, Value};
 
 use crate::client::Client;
+use crate::color::{Painter, Role, Term};
 use crate::discovery::Catalog;
 use crate::print::jsonpath::plain;
 
@@ -19,11 +20,12 @@ pub struct Args {
 
 pub fn run(
     out: &mut dyn Write,
+    term: &Term,
     client: &Client,
     catalog: &mut Catalog<'_>,
     args: &Args,
 ) -> Result<bool> {
-    let (fetched, complete) = super::fetch(client, catalog, &args.targets, "describe")?;
+    let (fetched, complete) = super::fetch(term, client, catalog, &args.targets, "describe")?;
     let mut first = true;
     for group in &fetched {
         for item in group.items() {
@@ -31,13 +33,13 @@ pub fn run(
                 writeln!(out)?;
             }
             first = false;
-            write!(out, "{}", describe(item))?;
+            write!(out, "{}", describe(term.out(), item))?;
         }
     }
     Ok(complete)
 }
 
-pub fn describe(item: &Value) -> String {
+pub fn describe(paint: Painter<'_>, item: &Value) -> String {
     let mut fields: Vec<(String, &Value)> = Vec::new();
     if let Some(metadata) = item["metadata"].as_object() {
         fields.extend(metadata.iter().map(|(key, value)| (label(key), value)));
@@ -52,11 +54,11 @@ pub fn describe(item: &Value) -> String {
         fields.push(("Status".to_owned(), &item["status"]));
     }
     let mut out = String::new();
-    write_fields(&mut out, &fields, 0);
+    write_fields(paint, &mut out, &fields, 0);
     out
 }
 
-fn write_fields(out: &mut String, fields: &[(String, &Value)], indent: usize) {
+fn write_fields(paint: Painter<'_>, out: &mut String, fields: &[(String, &Value)], indent: usize) {
     let width = fields
         .iter()
         .map(|(label, _)| label.chars().count())
@@ -65,11 +67,11 @@ fn write_fields(out: &mut String, fields: &[(String, &Value)], indent: usize) {
         + 4;
     let pad = " ".repeat(indent);
     for (label, value) in fields {
-        let head = format!("{pad}{label}:");
+        let head = format!("{pad}{}:", paint.nth(Role::DescribeKey, indent / 2, label));
         match value {
             Value::Object(map) if !map.is_empty() => {
                 out.push_str(&format!("{head}\n"));
-                write_fields(out, &labeled(map), indent + 2);
+                write_fields(paint, out, &labeled(map), indent + 2);
             }
             Value::Array(items) if items.iter().any(Value::is_object) => {
                 out.push_str(&format!("{head}\n"));
@@ -78,8 +80,8 @@ fn write_fields(out: &mut String, fields: &[(String, &Value)], indent: usize) {
                         out.push('\n');
                     }
                     match item.as_object() {
-                        Some(map) => write_fields(out, &labeled(map), indent + 2),
-                        None => out.push_str(&format!("{pad}  {}\n", plain(item))),
+                        Some(map) => write_fields(paint, out, &labeled(map), indent + 2),
+                        None => out.push_str(&format!("{pad}  {}\n", paint.value(&plain(item)))),
                     }
                 }
             }
@@ -89,13 +91,17 @@ fn write_fields(out: &mut String, fields: &[(String, &Value)], indent: usize) {
                     if line.is_empty() {
                         out.push('\n');
                     } else {
+                        let line = paint.paint(Role::DataString, line);
                         out.push_str(&format!("{pad}    {line}\n"));
                     }
                 }
             }
             scalar => {
-                let column = width + indent;
-                out.push_str(&format!("{head:<column$}{}\n", inline(scalar)));
+                let spaces = (width + indent).saturating_sub(indent + label.chars().count() + 1);
+                out.push_str(&head);
+                out.push_str(&" ".repeat(spaces));
+                out.push_str(&inline(paint, scalar));
+                out.push('\n');
             }
         }
     }
@@ -105,14 +111,19 @@ fn labeled(map: &Map<String, Value>) -> Vec<(String, &Value)> {
     map.iter().map(|(key, value)| (label(key), value)).collect()
 }
 
-fn inline(value: &Value) -> String {
+fn inline(paint: Painter<'_>, value: &Value) -> String {
     match value {
-        Value::Null => "<none>".to_owned(),
-        Value::Object(map) if map.is_empty() => "<none>".to_owned(),
-        Value::Array(items) if items.is_empty() => "<none>".to_owned(),
-        Value::Array(items) => items.iter().map(plain).collect::<Vec<_>>().join(", "),
-        Value::String(text) => text.trim_end().to_owned(),
-        other => plain(other),
+        Value::Null => paint.paint(Role::DataNull, "<none>"),
+        Value::Object(map) if map.is_empty() => paint.paint(Role::DataNull, "<none>"),
+        Value::Array(items) if items.is_empty() => paint.paint(Role::DataNull, "<none>"),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| paint.value(&plain(item)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        // A string reads as a string even when it spells a number.
+        Value::String(text) => paint.paint(Role::DataString, text.trim_end()),
+        other => paint.value(&plain(other)),
     }
 }
 
@@ -152,7 +163,7 @@ mod tests {
             "status": {},
         });
         assert_eq!(
-            describe(&project),
+            describe(Term::plain().out(), &project),
             "\
 Name:         atlas
 Kind:         Project
@@ -177,12 +188,33 @@ Spec:
     }
 
     #[test]
+    fn colors_keys_by_depth_and_keeps_alignment() {
+        let options = crate::color::Options {
+            force: Some("basic".to_owned()),
+            preset: Some("dark".to_owned()),
+            ..crate::color::Options::default()
+        };
+        let term = Term::new(&options, &Default::default(), None, false, false).unwrap();
+        let site = json!({"kind": "Site", "metadata": {}, "spec": {"title": "x", "n": 2, "on": true, "no": null}, "status": {}});
+        assert_eq!(
+            describe(term.out(), &site),
+            "\x1b[96mKind\x1b[0m:   \x1b[93mSite\x1b[0m\n\
+             \x1b[96mSpec\x1b[0m:\n  \
+             \x1b[36mTitle\x1b[0m:   \x1b[93mx\x1b[0m\n  \
+             \x1b[36mN\x1b[0m:       \x1b[35m2\x1b[0m\n  \
+             \x1b[36mOn\x1b[0m:      \x1b[32mtrue\x1b[0m\n  \
+             \x1b[36mNo\x1b[0m:      \x1b[90;3m<none>\x1b[0m\n"
+        );
+    }
+
+    #[test]
     fn singletons_have_no_name() {
         let site = json!({"kind": "Site", "metadata": {"updated_at": "t"}, "spec": {"title": "x"}, "status": {}});
         assert!(
-            describe(&site).starts_with("Kind:         Site\nUpdated At:   t\n"),
+            describe(Term::plain().out(), &site)
+                .starts_with("Kind:         Site\nUpdated At:   t\n"),
             "{}",
-            describe(&site)
+            describe(Term::plain().out(), &site)
         );
     }
 

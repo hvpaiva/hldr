@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 
 use crate::cmd::Writer;
+use crate::color::{Role, Term};
 use crate::content::{self, Publish};
 use crate::github::Change;
 
@@ -23,7 +24,7 @@ pub struct Args {
 /// Makes the branch hold these files as they are, in one commit: each
 /// manifest with the markdown it names. Files it already holds unchanged
 /// are left out; nothing absent from the arguments is removed.
-pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<bool> {
+pub fn run(out: &mut dyn Write, term: &Term, writer: &mut Writer<'_>, args: &Args) -> Result<bool> {
     if !args.dry_run {
         writer.authorize()?;
     }
@@ -70,7 +71,19 @@ pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<
             }
             (None, None) => {}
         }
-        writeln!(out, "{} {state}{suffix}", file.label())?;
+        let paint = term.out();
+        let key = match state {
+            "created" => Role::ApplyCreated,
+            "configured" => Role::ApplyConfigured,
+            _ => Role::ApplyUnchanged,
+        };
+        writeln!(
+            out,
+            "{} {}{}",
+            file.label(),
+            paint.paint(key, state),
+            paint.paint(Role::ApplyDryRun, suffix)
+        )?;
         if state != "unchanged" {
             labels.push(file.label());
         }

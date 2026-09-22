@@ -3,6 +3,7 @@ use std::io::Write;
 use anyhow::Result;
 
 use crate::client::Client;
+use crate::color::Term;
 use crate::discovery::Catalog;
 use crate::print::{self, Output};
 
@@ -22,12 +23,13 @@ pub struct Args {
 
 pub fn run(
     out: &mut dyn Write,
+    term: &Term,
     client: &Client,
     catalog: &mut Catalog<'_>,
     args: &Args,
 ) -> Result<bool> {
     let output: Output = args.output.parse()?;
-    let (fetched, complete) = super::fetch(client, catalog, &args.targets, "get")?;
-    print::print(out, &fetched, &output, args.no_headers)?;
+    let (fetched, complete) = super::fetch(term, client, catalog, &args.targets, "get")?;
+    print::print(out, term.out(), &fetched, &output, args.no_headers)?;
     Ok(complete)
 }

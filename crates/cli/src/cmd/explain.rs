@@ -6,6 +6,7 @@ use std::io::Write;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value};
 
+use crate::color::{Painter, Role, Term};
 use crate::discovery::Catalog;
 
 #[derive(Debug, clap::Args)]
@@ -15,7 +16,12 @@ pub struct Args {
     target: String,
 }
 
-pub fn run(out: &mut dyn Write, catalog: &mut Catalog<'_>, args: &Args) -> Result<bool> {
+pub fn run(
+    out: &mut dyn Write,
+    term: &Term,
+    catalog: &mut Catalog<'_>,
+    args: &Args,
+) -> Result<bool> {
     let mut parts = args.target.split('.');
     let kind_name = parts.next().unwrap_or_default();
     let resource = catalog.resolve(kind_name)?;
@@ -43,30 +49,42 @@ pub fn run(out: &mut dyn Write, catalog: &mut Catalog<'_>, args: &Args) -> Resul
         path.push(part);
         node = child;
     }
-    write!(out, "{}", explain(&resource.kind, &path, node, defs))?;
+    write!(
+        out,
+        "{}",
+        explain(term.out(), &resource.kind, &path, node, defs)
+    )?;
     Ok(true)
 }
 
-pub fn explain(kind: &str, path: &[&str], node: &Value, defs: &Map<String, Value>) -> String {
+pub fn explain(
+    paint: Painter<'_>,
+    kind: &str,
+    path: &[&str],
+    node: &Value,
+    defs: &Map<String, Value>,
+) -> String {
+    let heading = |name: &str| format!("{}:", paint.nth(Role::ExplainKey, 0, name));
     let resolved = resolve(node, defs);
-    let mut out = format!("KIND:     {kind}\n");
+    let mut out = format!("{}     {kind}\n", heading("KIND"));
     if !path.is_empty() {
         out.push_str(&format!(
-            "FIELD:    {} <{}>\n",
+            "{}    {} <{}>\n",
+            heading("FIELD"),
             path.join("."),
             type_name(node, defs)
         ));
     }
-    out.push_str("\nDESCRIPTION:\n");
+    out.push_str(&format!("\n{}\n", heading("DESCRIPTION")));
     let description = node["description"]
         .as_str()
         .or(resolved["description"].as_str());
     out.push_str(&indented(description.unwrap_or("<empty>"), 4));
 
     if let Some(values) = enum_values(resolved) {
-        out.push_str("\nVALUES:\n");
+        out.push_str(&format!("\n{}\n", heading("VALUES")));
         for (value, doc) in values {
-            out.push_str(&format!("    {value}\n"));
+            out.push_str(&format!("    {}\n", paint.nth(Role::ExplainKey, 1, value)));
             if let Some(doc) = doc {
                 out.push_str(&indented(doc, 8));
             }
@@ -78,14 +96,18 @@ pub fn explain(kind: &str, path: &[&str], node: &Value, defs: &Map<String, Value
             .as_array()
             .map(|names| names.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
-        out.push_str("\nFIELDS:\n");
+        out.push_str(&format!("\n{}\n", heading("FIELDS")));
         for (name, field) in properties {
             let flag = if required.contains(&name.as_str()) {
-                " -required-"
+                format!(" {}", paint.paint(Role::ExplainRequired, "-required-"))
             } else {
-                ""
+                String::new()
             };
-            out.push_str(&format!("  {name}\t<{}>{flag}\n", type_name(field, defs)));
+            out.push_str(&format!(
+                "  {}\t<{}>{flag}\n",
+                paint.nth(Role::ExplainKey, 1, name),
+                type_name(field, defs)
+            ));
             let doc = field["description"]
                 .as_str()
                 .or(resolve(field, defs)["description"].as_str());
@@ -205,7 +227,7 @@ mod tests {
         for part in path {
             node = &resolve(node, &defs)["properties"][*part];
         }
-        explain("Project", path, node, &defs)
+        explain(Term::plain().out(), "Project", path, node, &defs)
     }
 
     #[test]

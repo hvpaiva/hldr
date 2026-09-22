@@ -5,6 +5,7 @@ use hldr_core::manifest::Manifest;
 use serde_json::{Map, Value};
 
 use crate::cmd::Writer;
+use crate::color::{Role, Term};
 use crate::content::{self, Publish};
 use crate::github::Change;
 
@@ -28,7 +29,8 @@ pub struct Args {
     write: super::WriteArgs,
 }
 
-pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<bool> {
+pub fn run(out: &mut dyn Write, term: &Term, writer: &mut Writer<'_>, args: &Args) -> Result<bool> {
+    let paint = term.out();
     let patch: Value = serde_json::from_str(&args.patch).context("--patch is not JSON")?;
     if !args.dry_run {
         writer.authorize()?;
@@ -54,25 +56,30 @@ pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<
         None => resource.singular.clone(),
     };
     if patched == document {
-        writeln!(out, "{label} patched (no change)")?;
+        writeln!(
+            out,
+            "{label} {}",
+            paint.paint(Role::ApplyUnchanged, "patched (no change)")
+        )?;
         return Ok(true);
     }
     let rendered = serde_saphyr::to_string(&patched)?;
     content::validate(&registry, &path, &rendered)?;
     if args.dry_run {
-        write!(
-            out,
-            "{}",
-            super::diff::unified(
-                &original,
-                &rendered,
-                &format!("a/{path}"),
-                &format!("b/{path}")
-            )
-        )?;
+        let diff = super::diff::unified(
+            &original,
+            &rendered,
+            &format!("a/{path}"),
+            &format!("b/{path}"),
+        );
+        write!(out, "{}", super::diff::colored(paint, &diff))?;
         return Ok(true);
     }
-    writeln!(out, "{label} patched")?;
+    writeln!(
+        out,
+        "{label} {}",
+        paint.paint(Role::PatchPatched, "patched")
+    )?;
     let resources = writer.resources()?;
     Publish {
         client: writer.client,
