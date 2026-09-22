@@ -200,7 +200,13 @@ jobs:
           sed "s/^readonly stamped='@HLDR_VERSION@'$/readonly stamped='$VERSION'/" install.sh \
             > "$RUNNER_TEMP/cli/install.sh"
           grep -qx "readonly stamped='$VERSION'" "$RUNNER_TEMP/cli/install.sh"
-          git cliff --unreleased --tag "v$VERSION" --strip all > "$RUNNER_TEMP/notes.md"
+          # With no earlier tag, git-cliff would list every commit ever made.
+          if git describe --tags --abbrev=0 --match 'v[0-9]*' "$GITHUB_SHA" >/dev/null 2>&1; then
+            git cliff --unreleased --tag "v$VERSION" --strip all > "$RUNNER_TEMP/notes.md"
+          else
+            printf '%s\n' "The first release: versions start over at v0.1.0, before 1.0." \
+              "What came before is in the git history." > "$RUNNER_TEMP/notes.md"
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           { printf 'v%s\n\n' "$VERSION"; cat "$RUNNER_TEMP/notes.md"; } |

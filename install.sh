@@ -3,7 +3,7 @@
 # Installs hldr, the command-line client of hvpaiva.dev:
 #
 #   curl -fsSL https://hvpaiva.dev/install.sh | bash
-#   curl -fsSL https://hvpaiva.dev/install.sh | bash -s -- --version 4.6.0
+#   curl -fsSL https://hvpaiva.dev/install.sh | bash -s -- --version 0.1.0
 #
 # Each release attaches this script with its own version stamped in, so it
 # installs the binary of that release unless told otherwise; unstamped, as
@@ -24,10 +24,6 @@ set -u
 readonly repo=hvpaiva/hldr
 readonly stamped='@HLDR_VERSION@'
 readonly semver='^[0-9]+\.[0-9]+\.[0-9]+$'
-# The first release built with a provenance attestation. For any release
-# from it on, a missing attestation fails like a wrong one: whoever swapped
-# a binary and its checksum would leave exactly that.
-readonly attested_since=4.7.0
 
 say() {
 	printf 'hldr install: %s\n' "$*" >&2
@@ -77,20 +73,10 @@ sha256() {
 	printf '%s\n' "${line%% *}"
 }
 
-# Whether release $1 comes before release $2.
-before() {
-	local a b
-	IFS=. read -ra a <<<"$1"
-	IFS=. read -ra b <<<"$2"
-	local i
-	for i in 0 1 2; do
-		((a[i] != b[i])) && { ((a[i] < b[i])); return; }
-	done
-	return 1
-}
-
 # Checks the provenance GitHub recorded when the release workflow built the
-# binary. Returns 2 when it cannot be checked here.
+# binary; every release carries one, so a missing one fails like a wrong
+# one, as whoever swapped a binary and its checksum would leave. Returns 2
+# when it cannot be checked here.
 attested() {
 	command -v gh >/dev/null || return 2
 	gh auth status >/dev/null 2>&1 || return 2
@@ -192,20 +178,15 @@ main() {
 	[[ $actual == "$expected" ]] || die "checksum mismatch for $asset: expected $expected, got $actual"
 	say "checksum verified"
 
-	if before "$version" "$attested_since"; then
-		$require_attestation && die "$version predates build attestations ($attested_since)"
-		say "build provenance not checked: $version predates attestations ($attested_since)"
-	else
-		attested "$tmp/$asset"
-		case $? in
-		0) say "build provenance verified" ;;
-		2)
-			$require_attestation && die "cannot verify build provenance: install gh and run gh auth login"
-			say "build provenance not checked: needs gh, logged in"
-			;;
-		*) die "build provenance does not verify for $asset" ;;
-		esac
-	fi
+	attested "$tmp/$asset"
+	case $? in
+	0) say "build provenance verified" ;;
+	2)
+		$require_attestation && die "cannot verify build provenance: install gh and run gh auth login"
+		say "build provenance not checked: needs gh, logged in"
+		;;
+	*) die "build provenance does not verify for $asset" ;;
+	esac
 
 	mkdir -p -- "$dir" || die "cannot create $dir"
 	local staged=$dir/.hldr.$$

@@ -3,15 +3,25 @@
 # Decides what the deploy workflow does with HEAD and writes the answer to
 # $GITHUB_OUTPUT (stdout when run by hand):
 #
-#   release  true when a deployable input changed since the last vX.Y.Z tag:
-#            build, deploy, then tag `version`
+#   release  true when behavior changed since the last vX.Y.Z tag: build,
+#            deploy, then tag `version`
 #   deploy   true when something must reach production: a release, or a
 #            released version named in INPUT_VERSION (redeploy, no build)
 #   version  the semver to build, deploy or redeploy
 #
+# Only what changes behavior releases. Among the commits since the last tag
+# that touch a deployable input, one must be a feat, fix, perf, refactor,
+# revert or build, a breaking change, or not conventional at all (it may be
+# anything); docs, test, style, chore and ci alone never release. A change
+# to Cargo.lock, the Dockerfile or migrations/ always does, whatever its
+# type, since it changes what runs. Content lives in hldr-content and never
+# releases this repository.
+#
 # The bump follows Conventional Commits through git-cliff (cliff.toml). A
-# change git-cliff does not bump (chore, non-conventional) still takes the
-# next patch, because a changed image must never reuse a version.
+# `Release-As: X.Y.Z` trailer in any commit since the last tag names the
+# version instead, and releases even with no change: that is how 1.0.0
+# comes, from an empty commit. With no tag at all, the first release is
+# cliff.toml's initial_tag.
 
 set -u
 
@@ -23,7 +33,9 @@ readonly deployable=(
 	config .kamal Gemfile Gemfile.lock
 	install.sh
 )
+readonly always=(Cargo.lock Dockerfile migrations)
 readonly semver='^[0-9]+\.[0-9]+\.[0-9]+$'
+readonly conventional='^([a-z]+)(\([^)]*\))?(!)?: '
 
 out=${GITHUB_OUTPUT:-/dev/stdout}
 
@@ -32,9 +44,53 @@ die() {
 	exit 1
 }
 
+say() {
+	printf 'release-plan: %s\n' "$*" >&2
+}
+
 emit() {
 	printf 'release=%s\ndeploy=%s\nversion=%s\n' "$1" "$2" "$3" >>"$out"
-	printf 'release-plan: release=%s deploy=%s version=%s\n' "$1" "$2" "$3" >&2
+	say "release=$1 deploy=$2 version=$3"
+}
+
+# Whether version $1 comes after version $2.
+after() {
+	[[ $1 != "$2" && $(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1) == "$1" ]]
+}
+
+# Whether a commit since tag $1 that touches a deployable input changes
+# behavior.
+behavioral() {
+	git diff --quiet "$1" HEAD -- "${always[@]}"
+	case $? in
+	0) ;;
+	1)
+		say "${always[*]} changed"
+		return 0
+		;;
+	*) die "git diff against $1 failed" ;;
+	esac
+	local sha subject
+	while read -r sha; do
+		subject=$(git log -1 --format=%s "$sha")
+		if ! [[ $subject =~ $conventional ]]; then
+			say "not conventional, so it may change anything: $subject"
+			return 0
+		fi
+		if [[ -n ${BASH_REMATCH[3]} ]] ||
+			git log -1 --format=%b "$sha" | grep -qE '^BREAKING[ -]CHANGE:'; then
+			say "breaking: $subject"
+			return 0
+		fi
+		case ${BASH_REMATCH[1]} in
+		docs | test | style | chore | ci) ;;
+		*)
+			say "changes behavior: $subject"
+			return 0
+			;;
+		esac
+	done < <(git log --format=%H "$1..HEAD" -- "${deployable[@]}")
+	return 1
 }
 
 if [[ -n ${INPUT_VERSION:-} ]]; then
@@ -48,6 +104,19 @@ fi
 
 last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null)
 
+requested=$(git log --format='%(trailers:key=Release-As,valueonly)' "${last:+$last..}HEAD" |
+	sed -e 's/^[[:space:]]*v\{0,1\}//' -e 's/[[:space:]]*$//' -e '/^$/d' | sort -u)
+if [[ -n $requested ]]; then
+	[[ $requested != *$'\n'* ]] || die "commits ask for different versions: ${requested//$'\n'/, }"
+	[[ $requested =~ $semver ]] || die "Release-As is not a version: $requested"
+	if [[ -n $last ]] && ! after "$requested" "${last#v}"; then
+		die "Release-As $requested does not come after $last"
+	fi
+	say "Release-As $requested"
+	emit true true "$requested"
+	exit 0
+fi
+
 if [[ -n $last ]]; then
 	git diff --quiet "$last" HEAD -- "${deployable[@]}"
 	case $? in
@@ -58,6 +127,11 @@ if [[ -n $last ]]; then
 	1) ;;
 	*) die "git diff against $last failed" ;;
 	esac
+	if ! behavioral "$last"; then
+		say "only docs, test, style, chore or ci since $last: nothing to release"
+		emit false false "${last#v}"
+		exit 0
+	fi
 fi
 
 next=$(git cliff --bumped-version) || die "git-cliff could not compute the next version"

@@ -132,7 +132,7 @@ no version; `HLDR_VERSION` and `HLDR_REVISION` stamp it at build time.
 
 ```
 curl -fsSL https://hvpaiva.dev/install.sh | bash
-curl -fsSL https://hvpaiva.dev/install.sh | bash -s -- --version 4.7.0
+curl -fsSL https://hvpaiva.dev/install.sh | bash -s -- --version 0.1.0
 ```
 
 `/install.sh` redirects to the `install.sh` the latest release attached,
@@ -142,10 +142,11 @@ which has that release's version stamped in. It installs the static
 
 - the SHA-256 matches the `.sha256` the release attached;
 - the build provenance verifies with `gh attestation verify`, when `gh` is
-  installed and logged in. Each release since 4.7.0 carries a Sigstore
-  attestation tying the binary to the workflow run that built it, which a
-  checksum from the same place cannot. `--require-attestation` fails
-  instead of skipping; earlier releases have none.
+  installed and logged in. Every release carries a Sigstore attestation
+  tying the binary to the workflow run that built it, which a checksum
+  from the same place cannot, so a missing one fails like a wrong one.
+  `--require-attestation` fails instead of skipping when `gh` cannot
+  check.
 
 Running it again with the version installed changes nothing, so updating
 is the same line. The script runs from a function called on its last line,
@@ -395,17 +396,26 @@ number and compatibility comes from policy, not from matching numbers.
 
 - **One release.** A `vX.Y.Z` tag builds the server and the CLI, and every
   release deploys the server, even one that only changed the CLI.
-- **Version skew.** `hldr` supports a server of the same major whose minor
-  is at most one away; patches never matter. Further apart, it warns once
-  per discovery refresh; a different major is an error. `hldr version`
-  always checks. Builds outside the pipeline (`dev`) are never checked.
-- **API policy.** Within a major, `/api/v1` and the manifests only grow: a
-  new field is optional, and nothing is removed, retyped, made required or
-  made optional. A breaking change ships as a new major (`feat!`), or under
-  a new API version that `GET /api` lists beside v1 for at least one minor
-  release, so any client within the skew finds one it speaks. One edge
-  remains: an older `hldr` validates content with its own parser, so it
-  rejects a field a newer server accepts until it is updated.
+- **Pre-1.0.** hldr is `0.y.z` while it settles. As Cargo reads versions,
+  `0.y` is then the major: a breaking change takes the minor, anything
+  else the patch. From 1.0 on the same rules are plain semver: `feat` the
+  minor, a breaking change the major. Going to 1.0 is an ordinary
+  release, asked for with a trailer (see [Deploy](#deploy)); no code
+  changes for it.
+- **Version skew.** `hldr` supports a server on the same side of every
+  breaking release (the same major, or before 1.0 the same `0.y`), whose
+  minor is at most one away; patches never matter. Further apart, it warns
+  once per discovery refresh; across a breaking release it is an error.
+  `hldr version` always checks. Builds outside the pipeline (`dev`) are
+  never checked.
+- **API policy.** Between breaking releases, `/api/v1` and the manifests
+  only grow: a new field is optional, and nothing is removed, retyped,
+  made required or made optional. A breaking change ships as a breaking
+  release (`feat!`), or under a new API version that `GET /api` lists
+  beside v1 for at least one release, so any client within the skew finds
+  one it speaks. One edge remains: an older `hldr` validates content with
+  its own parser, so it rejects a field a newer server accepts until it is
+  updated.
 - **The policy is checked.** `crates/core/tests/api_contract.rs` renders
   every type the API serves or reads as JSON Schema and compares it with
   `crates/core/api-snapshot.json`. A breaking change fails with the
@@ -421,14 +431,29 @@ number and compatibility comes from policy, not from matching numbers.
 
 `.github/workflows/deploy.yml`, on every push to `main`:
 
-1. `plan` compares the deployable inputs (`crates/`, `migrations/`, Cargo
-   files, `Dockerfile`, `config/`, Kamal gems, `install.sh`) with the last
-   `vX.Y.Z` tag.
-   Nothing changed: nothing runs. Content is not an input: it ships from
-   hldr-content through the sync, not through a release.
-2. The bump comes from Conventional Commits: `fix` patch, `feat` minor,
-   `!`/`BREAKING CHANGE` major. Any other change to those inputs still
-   takes a patch, so a version always names one image.
+1. `plan` looks at what changed since the last `vX.Y.Z` tag. Only a change
+   in behavior releases:
+   - a commit touching a deployable input (`crates/`, `migrations/`, Cargo
+     files, `Dockerfile`, `config/`, Kamal gems, `install.sh`) that is a
+     `feat`, `fix`, `perf`, `refactor`, `revert` or `build`, a breaking
+     change, or not a Conventional Commit at all;
+   - any change to `Cargo.lock`, the `Dockerfile` or `migrations/`,
+     whatever the commit's type, since it changes what runs.
+
+   `docs`, `test`, `style`, `chore` and `ci` alone release nothing, and
+   neither does content: it ships from hldr-content through the sync.
+2. The bump comes from Conventional Commits (see
+   [Versions and compatibility](#versions-and-compatibility)). A
+   `Release-As: X.Y.Z` trailer in any commit since the last tag names the
+   version instead, and releases even with nothing else changed; that is
+   how 1.0 comes:
+
+   ```
+   git commit --allow-empty -m "chore: release 1.0.0" -m "Release-As: 1.0.0"
+   ```
+
+   The version must come after the last tag. With no tag at all, the
+   first release is `v0.1.0`.
 3. `check` (fmt, clippy, tests, cargo-deny), `build`
    (`ghcr.io/hvpaiva/hldr:X.Y.Z`) and `cli` (the static `hldr`, its
    checksum and its provenance attestation) run in parallel.
@@ -448,9 +473,8 @@ gh workflow run deploy -f version=X.Y.Z
 ```
 
 A version older than a migration the database has applied refuses to open
-it, and a version before 4.0.0 cannot read today's content layout. Going
-back across either means content that version reads and a fresh database,
-which its first sync rebuilds.
+it; going back across one means a fresh database, which the first sync
+rebuilds from content.
 
 The target is `apollo.hvpaiva.dev`, reached as `deploy` with the host keys
 in `config/known_hosts`; a rebuilt host has new keys, so update them there.

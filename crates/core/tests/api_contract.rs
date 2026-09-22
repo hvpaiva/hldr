@@ -12,8 +12,8 @@
 //!
 //! Regenerate with `UPDATE_API_SNAPSHOT=1 cargo test -p hldr-core --test
 //! api_contract`. A breaking change regenerates only with
-//! `UPDATE_API_SNAPSHOT=breaking`, and must ship as a new major (`feat!`) or
-//! under a new API version served beside v1.
+//! `UPDATE_API_SNAPSHOT=breaking`, and must ship as a breaking release
+//! (`feat!`) or under a new API version served beside v1.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -54,8 +54,8 @@ const STRUCTURAL: &[&str] = &[
     "allOf",
 ];
 
-const POLICY: &str = "the API only grows within a major: a breaking change ships as a new \
-                      major (`feat!`) or under a new API version, and regenerates with \
+const POLICY: &str = "the API only grows between breaking releases: a breaking change ships \
+                      as one (`feat!`) or under a new API version, and regenerates with \
                       UPDATE_API_SNAPSHOT=breaking";
 
 #[test]

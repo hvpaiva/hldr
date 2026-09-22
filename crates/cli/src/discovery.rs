@@ -376,20 +376,21 @@ mod tests {
     }
 
     #[test]
-    fn another_major_is_an_error_and_never_cached() {
+    fn a_breaking_release_apart_is_an_error_and_never_cached() {
         let stub = Stub::default();
-        stub.set_version("5.0.0");
+        stub.set_version("0.4.0");
         let client = Client::new(stub.serve());
         let cache = tempfile::tempdir().unwrap();
         let catalog = || {
             let mut catalog = Catalog::new(&client, Some(cache.path()));
-            catalog.version = "4.6.0";
+            catalog.version = "0.3.2";
             catalog
         };
 
         let err = catalog().discovery().unwrap_err();
         assert!(
-            err.to_string().contains("different major releases"),
+            err.to_string()
+                .contains("either side of a breaking release"),
             "{err}"
         );
         catalog().discovery().unwrap_err();
