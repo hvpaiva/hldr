@@ -856,6 +856,7 @@ mod tests {
     async fn site_does_not_serve_the_api() {
         let (_dir, state) = state().await;
         for path in [
+            "/api",
             "/api/v1/projects",
             "/api/v1/schema",
             "/api/v1/profile",
@@ -873,6 +874,13 @@ mod tests {
     #[tokio::test]
     async fn private_api_serves_resources() {
         let (_dir, state) = state().await;
+
+        let (status, _, versions) = call(api::router(state.clone()), "/api").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            versions,
+            serde_json::json!({"kind": "APIVersions", "versions": ["v1"]})
+        );
 
         let (status, _, list) = call(api::router(state.clone()), "/api/v1/projects").await;
         assert_eq!(status, StatusCode::OK);

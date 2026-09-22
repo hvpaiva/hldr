@@ -455,6 +455,29 @@ pub struct SyncRequest {
     pub revision: Option<String>,
 }
 
+/// The API versions this build serves, newest last. A breaking change adds
+/// a version and serves it beside the old one for at least one minor
+/// release, so any client within the supported skew finds one it speaks.
+pub const API_VERSIONS: &[&str] = &["v1"];
+
+/// `GET /api`: the API versions the server serves, as Kubernetes' `/api`
+/// lists them.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ApiVersions {
+    /// Always `APIVersions`.
+    pub kind: String,
+    pub versions: Vec<String>,
+}
+
+impl ApiVersions {
+    pub fn served() -> Self {
+        Self {
+            kind: "APIVersions".to_owned(),
+            versions: API_VERSIONS.iter().map(|&v| v.to_owned()).collect(),
+        }
+    }
+}
+
 /// Error body, RFC 9457 (`application/problem+json`).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Problem {

@@ -17,6 +17,7 @@ mod editor;
 mod github;
 mod pager;
 mod print;
+mod skew;
 #[cfg(test)]
 mod stub;
 
@@ -263,10 +264,11 @@ fn run(cli: &Cli, env: &Env, config: &Config, term: &Term, out: &mut dyn Write) 
         )?))
     };
     let cache = env.cache_dir();
+    let catalog = |client| Catalog::new(client, cache.as_deref()).warn_on(term);
     let writer = |client| -> Result<cmd::Writer<'_>> {
         cmd::Writer::new(
             client,
-            Catalog::new(client, cache.as_deref()),
+            catalog(client),
             github::API,
             env.editor.clone(),
             config::github_token(env, config)?,
@@ -281,8 +283,15 @@ fn run(cli: &Cli, env: &Env, config: &Config, term: &Term, out: &mut dyn Write) 
         Command::Sync(args) => {
             let client = connect()?;
             let token = || config::github_token(env, config);
-            let mut catalog = Catalog::new(&client, cache.as_deref());
-            cmd::sync::run(out, term, &client, &mut catalog, github::API, &token, args)
+            cmd::sync::run(
+                out,
+                term,
+                &client,
+                &mut catalog(&client),
+                github::API,
+                &token,
+                args,
+            )
         }
         Command::History(args) => {
             let token = || config::github_token(env, config);
@@ -294,41 +303,19 @@ fn run(cli: &Cli, env: &Env, config: &Config, term: &Term, out: &mut dyn Write) 
         Command::Validate(args) => cmd::validate::run(out, term, args),
         Command::Get(args) => {
             let client = connect()?;
-            cmd::get::run(
-                out,
-                term,
-                &client,
-                &mut Catalog::new(&client, cache.as_deref()),
-                args,
-            )
+            cmd::get::run(out, term, &client, &mut catalog(&client), args)
         }
         Command::Describe(args) => {
             let client = connect()?;
-            cmd::describe::run(
-                out,
-                term,
-                &client,
-                &mut Catalog::new(&client, cache.as_deref()),
-                args,
-            )
+            cmd::describe::run(out, term, &client, &mut catalog(&client), args)
         }
         Command::Explain(args) => {
             let client = connect()?;
-            cmd::explain::run(
-                out,
-                term,
-                &mut Catalog::new(&client, cache.as_deref()),
-                args,
-            )
+            cmd::explain::run(out, term, &mut catalog(&client), args)
         }
         Command::ApiResources(args) => {
             let client = connect()?;
-            cmd::api_resources::run(
-                out,
-                term,
-                &mut Catalog::new(&client, cache.as_deref()),
-                args,
-            )
+            cmd::api_resources::run(out, term, &mut catalog(&client), args)
         }
     }
 }

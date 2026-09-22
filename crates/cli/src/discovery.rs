@@ -6,18 +6,27 @@
 //! refreshed after six hours, when the server runs another version or serves
 //! another content revision than the ones that filled it, or at once when a
 //! type is not found in it.
+//!
+//! Every fetch also checks the server against this client: it must serve
+//! the API version the client speaks, and releases outside the supported
+//! skew get a warning, once per fetch rather than on every command.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use hldr_core::api::{ApiResource, List};
+use hldr_core::api::{ApiResource, ApiVersions, List};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::client::Client;
+use crate::color::Term;
+use crate::skew::{self, Skew};
 
 const TTL: Duration = Duration::from_secs(6 * 3600);
+
+/// The API version every path this client builds is under.
+const SPOKEN: &str = "v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Discovery {
@@ -37,6 +46,15 @@ pub struct Discovery {
 impl Discovery {
     fn fetch(client: &Client, now: u64) -> Result<Self> {
         let (server_version, content) = generation(client)?;
+        let served = api_versions(client)?;
+        if !served.iter().any(|version| version == SPOKEN) {
+            bail!(
+                "the server at {} serves API {}, and this hldr speaks only {SPOKEN}; install the \
+                 hldr released with the server (see Install in the hldr README)",
+                client.base(),
+                served.join(", ")
+            );
+        }
         let resources: List<ApiResource> =
             serde_json::from_value(client.get("/api/v1/api-resources")?)
                 .context("the server sent an invalid resource list")?;
@@ -70,6 +88,10 @@ pub struct Catalog<'a> {
     cache: Option<PathBuf>,
     discovery: Option<Discovery>,
     fresh: bool,
+    /// Where skew warnings go; without it they are dropped.
+    term: Option<&'a Term>,
+    /// This client's release, checked against the server's on each fetch.
+    version: &'a str,
 }
 
 impl<'a> Catalog<'a> {
@@ -80,7 +102,15 @@ impl<'a> Catalog<'a> {
             cache,
             discovery: None,
             fresh: false,
+            term: None,
+            version: hldr_core::VERSION,
         }
+    }
+
+    /// Sends skew warnings to `term`.
+    pub fn warn_on(mut self, term: &'a Term) -> Self {
+        self.term = Some(term);
+        self
     }
 
     pub fn discovery(&mut self) -> Result<&Discovery> {
@@ -113,6 +143,7 @@ impl<'a> Catalog<'a> {
 
     fn fetch(&mut self) -> Result<Discovery> {
         let discovery = Discovery::fetch(self.client, now())?;
+        self.check_skew(discovery.server_version.as_deref().unwrap_or("unknown"))?;
         self.write_cache(&discovery);
         self.fresh = true;
         Ok(discovery)
@@ -127,6 +158,21 @@ impl<'a> Catalog<'a> {
             Some(found) => Ok(found.clone()),
             None => bail!("the server doesn't have a resource type {name:?}"),
         }
+    }
+
+    /// A different major is an error: the API may have broken between them.
+    /// It runs before the cache is written, so it is never cached past.
+    fn check_skew(&self, server: &str) -> Result<()> {
+        let Some(message) = skew::explain(self.version, server) else {
+            return Ok(());
+        };
+        if skew::skew(self.version, server) == Skew::Unsupported {
+            bail!("{message}");
+        }
+        if let Some(term) = self.term {
+            term.warning(&message);
+        }
+        Ok(())
     }
 
     fn read_cache(&self) -> Option<Discovery> {
@@ -165,6 +211,17 @@ fn generation(client: &Client) -> Result<(Option<String>, Option<String>)> {
         .or(sync["synced_at"].as_str())
         .map(str::to_owned);
     Ok((version, content))
+}
+
+/// The API versions the server serves. A server from before `GET /api`
+/// existed serves only v1.
+fn api_versions(client: &Client) -> Result<Vec<String>> {
+    let Some(answer) = client.get_optional("/api")? else {
+        return Ok(vec!["v1".to_owned()]);
+    };
+    let versions: ApiVersions =
+        serde_json::from_value(answer).context("the server sent an invalid API version list")?;
+    Ok(versions.versions)
 }
 
 /// One cache directory per server, named after its URL.
@@ -282,6 +339,92 @@ mod tests {
             .discovery()
             .unwrap();
         assert_eq!(stub.calls(), 2, "and cached for it");
+    }
+
+    #[test]
+    fn warns_of_skew_once_per_fetch() {
+        let stub = Stub::default();
+        stub.set_version("4.3.0");
+        let client = Client::new(stub.serve());
+        let cache = tempfile::tempdir().unwrap();
+        let term = Term::plain();
+        term.hold();
+        let catalog = || {
+            let mut catalog = Catalog::new(&client, Some(cache.path())).warn_on(&term);
+            catalog.version = "4.6.0";
+            catalog
+        };
+
+        catalog().discovery().unwrap();
+        catalog().discovery().unwrap();
+        let held = term.held();
+        assert_eq!(
+            held.len(),
+            1,
+            "a cached discovery does not warn again: {held:?}"
+        );
+        assert!(
+            held[0].starts_with("warning: client 4.6.0 and server 4.3.0 are more than one minor"),
+            "{}",
+            held[0]
+        );
+
+        stub.set_version("4.5.0");
+        catalog().discovery().unwrap();
+        assert_eq!(term.held().len(), 1, "within the skew, nothing is said");
+    }
+
+    #[test]
+    fn another_major_is_an_error_and_never_cached() {
+        let stub = Stub::default();
+        stub.set_version("5.0.0");
+        let client = Client::new(stub.serve());
+        let cache = tempfile::tempdir().unwrap();
+        let catalog = || {
+            let mut catalog = Catalog::new(&client, Some(cache.path()));
+            catalog.version = "4.6.0";
+            catalog
+        };
+
+        let err = catalog().discovery().unwrap_err();
+        assert!(
+            err.to_string().contains("different major releases"),
+            "{err}"
+        );
+        catalog().discovery().unwrap_err();
+        assert_eq!(stub.calls(), 2, "each run asks again");
+    }
+
+    #[test]
+    fn the_server_must_serve_the_api_this_client_speaks() {
+        use axum::{Json, routing::get};
+        use serde_json::json;
+        let v2 = Client::new(stub::spawn(
+            axum::Router::new()
+                .route(
+                    "/healthz",
+                    get(|| async { Json(json!({"version": "5.0.0"})) }),
+                )
+                .route("/api/v1/sync", get(|| async { Json(json!({})) }))
+                .route(
+                    "/api",
+                    get(|| async { Json(json!({"kind": "APIVersions", "versions": ["v2"]})) }),
+                ),
+        ));
+        let err = Catalog::new(&v2, None).discovery().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("serves API v2, and this hldr speaks only v1"),
+            "{err}"
+        );
+
+        let stub = Stub::default();
+        let legacy = Client::new(stub.serve());
+        assert_eq!(
+            api_versions(&legacy).unwrap(),
+            ["v1"],
+            "no GET /api means v1"
+        );
     }
 
     #[test]

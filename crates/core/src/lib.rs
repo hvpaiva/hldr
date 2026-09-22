@@ -46,7 +46,7 @@ pub const REVISION: &str = match option_env!("HLDR_REVISION") {
     None => "unknown",
 };
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct Health {
     pub status: &'static str,
     pub version: &'static str,

@@ -210,6 +210,12 @@ impl Term {
         }
     }
 
+    /// The lines kept back so far, for tests that check what was said.
+    #[cfg(test)]
+    pub fn held(&self) -> Vec<String> {
+        self.held.borrow().clone().unwrap_or_default()
+    }
+
     fn emit(&self, line: String) {
         match self.held.borrow_mut().as_mut() {
             Some(held) => held.push(line),

@@ -40,6 +40,7 @@ impl IntoResponse for ApiError {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api", get(|| async { Json(api::ApiVersions::served()) }))
         .route("/api/v1/api-resources", get(api_resources))
         .route("/api/v1/schema", get(schema))
         .route("/api/v1/sync", get(sync_status).post(sync))

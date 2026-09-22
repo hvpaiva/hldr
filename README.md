@@ -69,7 +69,9 @@ revision, the served content revision, and how the last sync went,
 rendered without JavaScript. SQLite defaults to `./hldr.db`.
 `HLDR_ORIGIN` sets the canonical URL and defaults to the local listener.
 
-The private API (`/api/v1`, and `/healthz`) listens on `127.0.0.1:8081`.
+The private API (`/api/v1`, `/api` and `/healthz`) listens on `127.0.0.1:8081`.
+`GET /api` lists the API versions the server serves, as Kubernetes' `/api`
+does (see [Versions and compatibility](#versions-and-compatibility)).
 `HLDR_API_ADDR` overrides, as `host:port` or `unix:/absolute/path`. A unix
 socket path is taken over from whatever process held it, so a new container
 can boot while the old one still serves; a non-socket file at the path is
@@ -143,7 +145,8 @@ sha256sum -c hldr-x86_64-unknown-linux-musl.sha256
 install -m 755 hldr-x86_64-unknown-linux-musl ~/.local/bin/hldr
 ```
 
-`hldr version` warns when it and the server come from different releases.
+`hldr` supports a server one minor release older or newer than itself (see
+[Versions and compatibility](#versions-and-compatibility)).
 From source: `cargo install --locked --path crates/cli`.
 
 ```
@@ -230,7 +233,10 @@ server (`/api/v1/api-resources`): the built-in kinds, and one per page type
 content declares, so a type added in hldr-content works here without a new
 `hldr`. Discovery is cached per server under `$XDG_CACHE_HOME/hldr/` for six
 hours, and refreshed when the server runs another version or serves another
-content revision, and at once for a type the cache does not know. `-o`
+content revision, and at once for a type the cache does not know. Each
+refresh also checks the server against the client: it must serve the API
+version the client speaks, and a server outside the supported skew gets a
+warning, or an error for another major. `-o`
 takes `table`, `wide`, `json`, `yaml`, `name`, `jsonpath=TEMPLATE` (kubectl
 templates without `range`) and `custom-columns=HEADER:PATH,...`.
 
@@ -330,6 +336,35 @@ cargo fmt --all --check
 cargo clippy --all-targets --workspace -- -D warnings
 cargo test --workspace
 ```
+
+## Versions and compatibility
+
+The model is Kubernetes', where kubectl and the API server share a release
+number and compatibility comes from policy, not from matching numbers.
+
+- **One release.** A `vX.Y.Z` tag builds the server and the CLI, and every
+  release deploys the server, even one that only changed the CLI.
+- **Version skew.** `hldr` supports a server of the same major whose minor
+  is at most one away; patches never matter. Further apart, it warns once
+  per discovery refresh; a different major is an error. `hldr version`
+  always checks. Builds outside the pipeline (`dev`) are never checked.
+- **API policy.** Within a major, `/api/v1` and the manifests only grow: a
+  new field is optional, and nothing is removed, retyped, made required or
+  made optional. A breaking change ships as a new major (`feat!`), or under
+  a new API version that `GET /api` lists beside v1 for at least one minor
+  release, so any client within the skew finds one it speaks. One edge
+  remains: an older `hldr` validates content with its own parser, so it
+  rejects a field a newer server accepts until it is updated.
+- **The policy is checked.** `crates/core/tests/api_contract.rs` renders
+  every type the API serves or reads as JSON Schema and compares it with
+  `crates/core/api-snapshot.json`. A breaking change fails with the
+  policy; any other change fails until the snapshot is regenerated, so
+  every change to the contract shows in a commit:
+
+  ```
+  UPDATE_API_SNAPSHOT=1 cargo test -p hldr-core --test api_contract
+  UPDATE_API_SNAPSHOT=breaking cargo test -p hldr-core --test api_contract   # with feat!
+  ```
 
 ## Deploy
 

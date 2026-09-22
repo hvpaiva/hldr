@@ -1,0 +1,1786 @@
+{
+  "kinds": {
+    "Collection": {
+      "$defs": {
+        "CollectionSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "badge": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "columns": {
+              "items": {
+                "$ref": "#/$defs/ListingColumn"
+              },
+              "type": "array"
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "order": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "ListingColumn": {
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "type": "string"
+            },
+            "header": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "width": {
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "field"
+          ],
+          "type": "object"
+        },
+        "NamedMetadata": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/NamedMetadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/CollectionSpec"
+        },
+        "status": {}
+      },
+      "required": [
+        "kind",
+        "metadata",
+        "spec",
+        "status"
+      ],
+      "type": "object"
+    },
+    "Event": {
+      "$defs": {
+        "EventMetadata": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "name",
+            "seq"
+          ],
+          "type": "object"
+        },
+        "EventType": {
+          "enum": [
+            "Normal",
+            "Warning"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "first_at": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "last_at": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/EventMetadata"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/EventType"
+        }
+      },
+      "required": [
+        "kind",
+        "metadata",
+        "type",
+        "reason",
+        "message",
+        "count",
+        "first_at",
+        "last_at"
+      ],
+      "type": "object"
+    },
+    "Nav": {
+      "$defs": {
+        "LiteralLink": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "label",
+            "url"
+          ],
+          "type": "object"
+        },
+        "NavCommand": {
+          "oneOf": [
+            {
+              "const": "colorscheme",
+              "type": "string"
+            },
+            {
+              "const": "find",
+              "type": "string"
+            },
+            {
+              "const": "help",
+              "type": "string"
+            },
+            {
+              "const": "checkhealth",
+              "type": "string"
+            }
+          ]
+        },
+        "NavItem": {
+          "additionalProperties": false,
+          "properties": {
+            "collection": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "command": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NavCommand"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "link": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NavLink"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "open_max": {
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "page": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "NavLink": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/LiteralLink"
+            }
+          ]
+        },
+        "NavSection": {
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "items": {
+                "$ref": "#/$defs/NavItem"
+              },
+              "type": "array"
+            },
+            "name": {
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name",
+            "items"
+          ],
+          "type": "object"
+        },
+        "NavSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "sections": {
+              "items": {
+                "$ref": "#/$defs/NavSection"
+              },
+              "type": "array"
+            },
+            "statusline": {
+              "$ref": "#/$defs/Statusline"
+            }
+          },
+          "required": [
+            "sections"
+          ],
+          "type": "object"
+        },
+        "SingletonMetadata": {
+          "properties": {
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "Statusline": {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/SingletonMetadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/NavSpec"
+        },
+        "status": {}
+      },
+      "required": [
+        "kind",
+        "metadata",
+        "spec",
+        "status"
+      ],
+      "type": "object"
+    },
+    "Page": {
+      "$defs": {
+        "FrontmatterMode": {
+          "oneOf": [
+            {
+              "const": "hidden",
+              "type": "string"
+            },
+            {
+              "const": "open",
+              "type": "string"
+            },
+            {
+              "const": "folded",
+              "type": "string"
+            }
+          ]
+        },
+        "PageContent": {
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "inline": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "PageJsonLd": {
+          "oneOf": [
+            {
+              "const": "person",
+              "type": "string"
+            }
+          ]
+        },
+        "PageMetadata": {
+          "properties": {
+            "created_at": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "title"
+          ],
+          "type": "object"
+        },
+        "PageSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "buffer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "content": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PageContent"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "draft": {
+              "type": "boolean"
+            },
+            "frontmatter": {
+              "$ref": "#/$defs/FrontmatterMode"
+            },
+            "json_ld": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PageJsonLd"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "standalone_title": {
+              "type": "boolean"
+            },
+            "style": {
+              "$ref": "#/$defs/PageStyle"
+            }
+          },
+          "type": "object"
+        },
+        "PageStyle": {
+          "oneOf": [
+            {
+              "const": "markdown",
+              "type": "string"
+            },
+            {
+              "const": "colorscheme",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/PageMetadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/PageSpec"
+        },
+        "status": {}
+      },
+      "required": [
+        "kind",
+        "metadata",
+        "spec",
+        "status"
+      ],
+      "type": "object"
+    },
+    "PageKind": {
+      "$defs": {
+        "FieldSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "keys": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "ok": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "required": {
+              "type": "boolean"
+            },
+            "type": {
+              "$ref": "#/$defs/FieldType"
+            },
+            "values": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        "FieldType": {
+          "oneOf": [
+            {
+              "const": "string",
+              "type": "string"
+            },
+            {
+              "const": "int",
+              "type": "string"
+            },
+            {
+              "const": "bool",
+              "type": "string"
+            },
+            {
+              "const": "enum",
+              "type": "string"
+            },
+            {
+              "const": "list",
+              "type": "string"
+            },
+            {
+              "const": "url",
+              "type": "string"
+            },
+            {
+              "const": "links",
+              "type": "string"
+            }
+          ]
+        },
+        "JsonLdSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "map": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        "KindNames": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "plural": {
+              "type": "string"
+            },
+            "short_names": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "singular": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "singular",
+            "plural"
+          ],
+          "type": "object"
+        },
+        "NamedMetadata": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "PageKindSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "fields": {
+              "additionalProperties": {
+                "$ref": "#/$defs/FieldSpec"
+              },
+              "type": "object"
+            },
+            "footer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "json_ld": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/JsonLdSpec"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "names": {
+              "$ref": "#/$defs/KindNames"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "names"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/NamedMetadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/PageKindSpec"
+        },
+        "status": {}
+      },
+      "required": [
+        "kind",
+        "metadata",
+        "spec",
+        "status"
+      ],
+      "type": "object"
+    },
+    "Profile": {
+      "$defs": {
+        "ProfileLinks": {
+          "additionalProperties": false,
+          "properties": {
+            "github": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "linkedin": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "ProfileSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "bio": {
+              "type": "string"
+            },
+            "email": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "headline": {
+              "type": "string"
+            },
+            "links": {
+              "$ref": "#/$defs/ProfileLinks"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "headline",
+            "bio"
+          ],
+          "type": "object"
+        },
+        "SingletonMetadata": {
+          "properties": {
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/SingletonMetadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/ProfileSpec"
+        },
+        "status": {}
+      },
+      "required": [
+        "kind",
+        "metadata",
+        "spec",
+        "status"
+      ],
+      "type": "object"
+    },
+    "Server": {
+      "$defs": {
+        "BackupState": {
+          "properties": {
+            "last_day": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last_error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pending": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "repository": {
+              "type": "string"
+            },
+            "token_expires_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "repository",
+            "pending"
+          ],
+          "type": "object"
+        },
+        "ContentState": {
+          "properties": {
+            "last_attempt_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "last_error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "revision": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": "string"
+            },
+            "synced_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "type": "object"
+        },
+        "DatabaseState": {
+          "properties": {
+            "bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "wal_bytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "bytes",
+            "wal_bytes"
+          ],
+          "type": "object"
+        },
+        "GitHubQuota": {
+          "properties": {
+            "limit": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "observed_at": {
+              "type": "string"
+            },
+            "remaining": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "reset_at": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "limit",
+            "remaining",
+            "reset_at",
+            "observed_at"
+          ],
+          "type": "object"
+        },
+        "ServerStatus": {
+          "properties": {
+            "backup": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BackupState"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "content": {
+              "$ref": "#/$defs/ContentState"
+            },
+            "database": {
+              "$ref": "#/$defs/DatabaseState"
+            },
+            "github": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GitHubQuota"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "revision": {
+              "type": "string"
+            },
+            "started_at": {
+              "type": "string"
+            },
+            "uptime": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "version",
+            "revision",
+            "started_at",
+            "uptime",
+            "content",
+            "database"
+          ],
+          "type": "object"
+        },
+        "SingletonMetadata": {
+          "properties": {
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/SingletonMetadata"
+        },
+        "status": {
+          "$ref": "#/$defs/ServerStatus"
+        }
+      },
+      "required": [
+        "kind",
+        "metadata",
+        "status"
+      ],
+      "type": "object"
+    },
+    "Site": {
+      "$defs": {
+        "SingletonMetadata": {
+          "properties": {
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "SiteSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "theme": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "values": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          },
+          "required": [
+            "title",
+            "theme"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/SingletonMetadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/SiteSpec"
+        },
+        "status": {}
+      },
+      "required": [
+        "kind",
+        "metadata",
+        "spec",
+        "status"
+      ],
+      "type": "object"
+    },
+    "Theme": {
+      "$defs": {
+        "Color": {
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "type": "string"
+        },
+        "NamedMetadata": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "Palette": {
+          "additionalProperties": false,
+          "properties": {
+            "accent": {
+              "$ref": "#/$defs/Color"
+            },
+            "accent2": {
+              "$ref": "#/$defs/Color"
+            },
+            "bg": {
+              "$ref": "#/$defs/Color"
+            },
+            "border": {
+              "$ref": "#/$defs/Color"
+            },
+            "error": {
+              "$ref": "#/$defs/Color"
+            },
+            "fg": {
+              "$ref": "#/$defs/Color"
+            },
+            "fg_dim": {
+              "$ref": "#/$defs/Color"
+            },
+            "fg_muted": {
+              "$ref": "#/$defs/Color"
+            },
+            "highlight": {
+              "$ref": "#/$defs/Color"
+            },
+            "special": {
+              "$ref": "#/$defs/Color"
+            },
+            "teal": {
+              "$ref": "#/$defs/Color"
+            }
+          },
+          "required": [
+            "bg",
+            "fg",
+            "fg_dim",
+            "fg_muted",
+            "accent",
+            "accent2",
+            "highlight",
+            "special",
+            "teal",
+            "error",
+            "border"
+          ],
+          "type": "object"
+        },
+        "ThemeSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "colors": {
+              "$ref": "#/$defs/Palette"
+            },
+            "dark": {
+              "type": "boolean"
+            },
+            "hidden": {
+              "type": "boolean"
+            },
+            "order": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "title",
+            "dark",
+            "colors"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/$defs/NamedMetadata"
+        },
+        "spec": {
+          "$ref": "#/$defs/ThemeSpec"
+        },
+        "status": {}
+      },
+      "required": [
+        "kind",
+        "metadata",
+        "spec",
+        "status"
+      ],
+      "type": "object"
+    }
+  },
+  "wire": {
+    "APIResourceList": {
+      "$defs": {
+        "ApiResource": {
+          "properties": {
+            "columns": {
+              "items": {
+                "$ref": "#/$defs/Column"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "short_names": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "singleton": {
+              "type": "boolean"
+            },
+            "singular": {
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/Source"
+            },
+            "verbs": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "name",
+            "singular",
+            "short_names",
+            "kind",
+            "singleton",
+            "verbs",
+            "source",
+            "columns"
+          ],
+          "type": "object"
+        },
+        "Column": {
+          "properties": {
+            "json_path": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "ok": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "values": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "wide": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name",
+            "json_path",
+            "wide"
+          ],
+          "type": "object"
+        },
+        "Source": {
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ApiResource"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "items"
+      ],
+      "type": "object"
+    },
+    "APIVersions": {
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "versions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "versions"
+      ],
+      "type": "object"
+    },
+    "DailyMetrics": {
+      "$defs": {
+        "DayVisits": {
+          "properties": {
+            "bots": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "day": {
+              "type": "string"
+            },
+            "views": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "visitors": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "day",
+            "views",
+            "visitors",
+            "bots"
+          ],
+          "type": "object"
+        },
+        "Period": {
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "since": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "since",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        "Visits": {
+          "properties": {
+            "bots": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "views": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "visitors": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "views",
+            "visitors",
+            "bots"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/DayVisits"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "period": {
+          "$ref": "#/$defs/Period"
+        },
+        "total": {
+          "$ref": "#/$defs/Visits"
+        }
+      },
+      "required": [
+        "kind",
+        "period",
+        "total",
+        "items"
+      ],
+      "type": "object"
+    },
+    "EventList": {
+      "$defs": {
+        "Event": {
+          "properties": {
+            "count": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "first_at": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "last_at": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "metadata": {
+              "$ref": "#/$defs/EventMetadata"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "revision": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "$ref": "#/$defs/EventType"
+            }
+          },
+          "required": [
+            "kind",
+            "metadata",
+            "type",
+            "reason",
+            "message",
+            "count",
+            "first_at",
+            "last_at"
+          ],
+          "type": "object"
+        },
+        "EventMetadata": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "name",
+            "seq"
+          ],
+          "type": "object"
+        },
+        "EventType": {
+          "enum": [
+            "Normal",
+            "Warning"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Event"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "seq": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "seq",
+        "items"
+      ],
+      "type": "object"
+    },
+    "Health": {
+      "properties": {
+        "content_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "version",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "PageMetrics": {
+      "$defs": {
+        "PageVisits": {
+          "properties": {
+            "route": {
+              "type": "string"
+            },
+            "views": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "visitors": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "route",
+            "views",
+            "visitors"
+          ],
+          "type": "object"
+        },
+        "Period": {
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "since": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "since",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/PageVisits"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "period": {
+          "$ref": "#/$defs/Period"
+        }
+      },
+      "required": [
+        "kind",
+        "period",
+        "items"
+      ],
+      "type": "object"
+    },
+    "Problem": {
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "status": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "title",
+        "status",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "ReferrerMetrics": {
+      "$defs": {
+        "Period": {
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "since": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "since",
+            "from",
+            "to"
+          ],
+          "type": "object"
+        },
+        "ReferrerVisits": {
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "views": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "host",
+            "views"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ReferrerVisits"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "period": {
+          "$ref": "#/$defs/Period"
+        }
+      },
+      "required": [
+        "kind",
+        "period",
+        "items"
+      ],
+      "type": "object"
+    },
+    "SyncRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SyncStatus": {
+      "$defs": {
+        "KindReport": {
+          "properties": {
+            "deleted": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "skipped": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "upserted": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "SyncReport": {
+          "properties": {
+            "kinds": {
+              "additionalProperties": {
+                "$ref": "#/$defs/KindReport"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "kinds"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "last_attempt_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "report": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SyncReport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "synced_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "source"
+      ],
+      "type": "object"
+    }
+  }
+}
