@@ -10,7 +10,9 @@ flate2 = "1.1.10"
 hldr-core = { workspace = true, features = ["store"] }
 maud = { version = "0.27.0", features = ["axum"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.145"
+# Maps keep the order content wrote them in, as the CLI's do; without it a
+# release build sorts them while tests, built with the CLI, do not.
+serde_json = { version = "1.0.145", features = ["preserve_order"] }
 tar = { version = "0.4.46", default-features = false }
 tempfile = "3.23.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
