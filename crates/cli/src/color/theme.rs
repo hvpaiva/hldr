@@ -45,6 +45,9 @@ pub enum Role {
     DeleteDeleted,
     PatchPatched,
     VersionKey,
+    SyncCommitted,
+    SyncSynced,
+    SyncSkipped,
 }
 
 struct Spec {
@@ -113,6 +116,10 @@ const SPECS: &[Spec] = &[
     color(DeleteDeleted, "delete.deleted", &[BaseDanger]),
     color(PatchPatched, "patch.patched", &[BaseWarning]),
     list(VersionKey, "version.key", &[BaseKey]),
+    // hldr's own: kubectl neither commits nor syncs.
+    color(SyncCommitted, "sync.committed", &[BaseSuccess]),
+    color(SyncSynced, "sync.synced", &[BaseSuccess]),
+    color(SyncSkipped, "sync.skipped", &[BaseWarning]),
 ];
 
 fn spec(key: Role) -> &'static Spec {

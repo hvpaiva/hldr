@@ -64,6 +64,7 @@ pub fn run(out: &mut dyn Write, term: &Term, writer: &mut Writer<'_>, args: &Arg
         parent: &head,
         message: args.write.message(&format!("delete {}", labels.join(", "))),
         sync: args.write.sync(),
+        paint: term.out(),
     }
     .run(out, &changes)?;
     for label in &labels {

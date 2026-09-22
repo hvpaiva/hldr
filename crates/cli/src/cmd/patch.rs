@@ -88,6 +88,7 @@ pub fn run(out: &mut dyn Write, term: &Term, writer: &mut Writer<'_>, args: &Arg
         parent: &head,
         message: args.write.message(&format!("patch {label}")),
         sync: args.write.sync(),
+        paint,
     }
     .run(
         out,

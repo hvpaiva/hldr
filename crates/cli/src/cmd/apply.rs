@@ -99,6 +99,7 @@ pub fn run(out: &mut dyn Write, term: &Term, writer: &mut Writer<'_>, args: &Arg
         parent: &head,
         message: args.write.message(&format!("apply {}", labels.join(", "))),
         sync: args.write.sync(),
+        paint: term.out(),
     }
     .run(out, &changes)?;
     Ok(true)

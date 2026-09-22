@@ -104,7 +104,7 @@ fn run_with(
         Command::Diff(a) => super::diff::run(&mut out, &term, &mut writer, a),
         Command::Patch(a) => super::patch::run(&mut out, &term, &mut writer, a),
         Command::Delete(a) => super::delete::run(&mut out, &term, &mut writer, a),
-        Command::Edit(a) => super::edit::run(&mut out, &mut writer, a),
+        Command::Edit(a) => super::edit::run(&mut out, &term, &mut writer, a),
     };
     (result, String::from_utf8(out).unwrap())
 }

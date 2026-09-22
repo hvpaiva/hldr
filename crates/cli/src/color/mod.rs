@@ -107,6 +107,19 @@ impl Term {
         }
     }
 
+    /// The dark preset in the 16 basic colors on both streams, for tests
+    /// that check escapes.
+    #[cfg(test)]
+    pub fn basic() -> Self {
+        let options = Options {
+            force: Some("basic".to_owned()),
+            preset: Some("dark".to_owned()),
+            ..Options::default()
+        };
+        Self::new(&options, &ColorEnv::default(), None, false, false)
+            .expect("the dark preset parses")
+    }
+
     /// Each stream is colored on its own terms, so `2>log` keeps escapes out
     /// of the log while the table on the terminal is still colored.
     pub fn new(

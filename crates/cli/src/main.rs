@@ -166,7 +166,7 @@ fn run(cli: &Cli, env: &Env, config: &Config, term: &Term, out: &mut dyn Write) 
         )
     };
     match &cli.command {
-        Command::Edit(args) => cmd::edit::run(out, &mut writer(&connect()?)?, args),
+        Command::Edit(args) => cmd::edit::run(out, term, &mut writer(&connect()?)?, args),
         Command::Apply(args) => cmd::apply::run(out, term, &mut writer(&connect()?)?, args),
         Command::Diff(args) => cmd::diff::run(out, term, &mut writer(&connect()?)?, args),
         Command::Patch(args) => cmd::patch::run(out, term, &mut writer(&connect()?)?, args),

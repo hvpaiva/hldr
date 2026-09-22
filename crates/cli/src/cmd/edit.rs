@@ -3,6 +3,7 @@ use std::io::Write;
 use anyhow::{Result, bail};
 
 use crate::cmd::Writer;
+use crate::color::Term;
 use crate::content::{self, Publish};
 use crate::editor;
 use crate::github::Change;
@@ -24,7 +25,7 @@ pub struct Args {
 
 /// Opens the resource's manifest, or its markdown, as the branch has it,
 /// and commits what the editor saves once it validates.
-pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<bool> {
+pub fn run(out: &mut dyn Write, term: &Term, writer: &mut Writer<'_>, args: &Args) -> Result<bool> {
     writer.authorize()?;
     let resource = writer.resource(&args.kind, "edit")?;
     let manifest_path = content::path_for(&resource, args.name.as_deref())?;
@@ -76,6 +77,7 @@ pub fn run(out: &mut dyn Write, writer: &mut Writer<'_>, args: &Args) -> Result<
         parent: &head,
         message: args.write.message(&format!("edit {label}")),
         sync: args.write.sync(),
+        paint: term.out(),
     }
     .run(
         out,

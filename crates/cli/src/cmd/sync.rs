@@ -39,7 +39,7 @@ pub fn run(
         None => {
             let status = client.post("/api/v1/sync", &json!({}))?;
             let resources = &catalog.discovery()?.resources;
-            writeln!(out, "synced: {}", content::summary(&status, resources))?;
+            writeln!(out, "{}", content::synced(term.out(), &status, resources))?;
             Ok(true)
         }
         Some(Command::Status { output }) => {

@@ -15,6 +15,7 @@ use hldr_core::spec::{CollectionSpec, PageKindSpec};
 use serde_json::{Value, json};
 
 use crate::client::Client;
+use crate::color::{Painter, Role};
 use crate::discovery::Catalog;
 use crate::github::{Change, GitHub};
 
@@ -366,6 +367,7 @@ pub struct Publish<'a> {
     pub parent: &'a str,
     pub message: String,
     pub sync: bool,
+    pub paint: Painter<'a>,
 }
 
 impl Publish<'_> {
@@ -381,7 +383,8 @@ impl Publish<'_> {
                 .commit(&self.target.branch, self.parent, changes, &message)?;
         writeln!(
             out,
-            "committed {} to {}@{}",
+            "{} {} to {}@{}",
+            self.paint.paint(Role::SyncCommitted, "committed"),
             short(&commit),
             self.target.github.repo(),
             self.target.branch
@@ -389,7 +392,8 @@ impl Publish<'_> {
         if !self.sync {
             writeln!(
                 out,
-                "not synced: the server picks it up on its next poll, or run `hldr sync`"
+                "{}: the server picks it up on its next poll, or run `hldr sync`",
+                self.paint.paint(Role::SyncSkipped, "not synced")
             )?;
             return Ok(());
         }
@@ -399,9 +403,18 @@ impl Publish<'_> {
             .with_context(|| {
                 format!("committed {}, but the site did not update", short(&commit))
             })?;
-        writeln!(out, "synced: {}", summary(&status, self.resources))?;
+        writeln!(out, "{}", synced(self.paint, &status, self.resources))?;
         Ok(())
     }
+}
+
+/// `synced: <summary>`, as `hldr sync` and every write print it.
+pub fn synced(paint: Painter<'_>, status: &Value, resources: &[ApiResource]) -> String {
+    format!(
+        "{}: {}",
+        paint.paint(Role::SyncSynced, "synced"),
+        summary(status, resources)
+    )
 }
 
 /// What a sync changed, in a line: singletons by name, then the other kinds
@@ -485,6 +498,11 @@ mod tests {
         assert_eq!(
             summary(&json!({"revision": "abc"}), &resources),
             "abc, already current"
+        );
+        let term = crate::color::Term::basic();
+        assert_eq!(
+            synced(term.out(), &json!({"revision": "abc"}), &resources),
+            "\x1b[32msynced\x1b[0m: abc, already current"
         );
     }
 
