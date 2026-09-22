@@ -82,6 +82,8 @@ a:hover { text-decoration: underline; }
 .ok { color: var(--teal); } .warn { color: var(--highlight); } .err { color: var(--error); }
 .tag { color: var(--highlight); }
 .buf strong { font-weight: 600; }
+.buf .fold > summary { list-style: none; cursor: pointer; }
+.buf .fold > summary::-webkit-details-marker { display: none; }
 pre.ban { color: var(--accent); font-size: 8px; line-height: 1.12; white-space: pre; overflow: hidden; }
 @media (min-width: 720px) { pre.ban { font-size: 11px; } }
 .sw { display: inline-flex; gap: 2px; vertical-align: -1px; }
